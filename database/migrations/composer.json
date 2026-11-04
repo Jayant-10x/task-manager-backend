@@ -1,0 +1,14 @@
+{
+    "name": "vendor_name/migrations",
+    "description": "description",
+    "minimum-stability": "stable",
+    "license": "proprietary",
+    "authors": [
+        {
+            "name": "Jayant Ashish",
+            "email": "email@example.com"
+        }
+    ],
+    "require": {
+    }
+}
