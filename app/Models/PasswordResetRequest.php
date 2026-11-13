@@ -18,4 +18,9 @@ class PasswordResetRequest extends Model
     {
         return $this->belongsTo(User::class, 'prr_opened_by', 'usr_id');
     }
+
+    public function completedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'prr_completed_by', 'usr_id');
+    }
 }

@@ -20,6 +20,13 @@ class CheckModulePermission {
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
+        if (!$user->usr_status) {
+            return response()->json([
+                'message' => 'Account is inactive.',
+                'code' => 'ACCOUNT_INACTIVE',
+            ], 403);
+        }
+
         // 1. Bypass check for Super Admins
         if ($user->usr_is_super_admin) {
             return $next($request);

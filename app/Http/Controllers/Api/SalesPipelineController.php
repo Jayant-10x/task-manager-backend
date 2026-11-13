@@ -112,7 +112,7 @@ class SalesPipelineController extends Controller {
     public function saveDeal (Request $request) {
         $validated = $request->validate([
             'deal_name' => 'required|string|min:2|max:120',
-            'account_client' => 'nullable|string|min:2|max:120',
+            'account_client' => 'nullable|string|max:120',
             'owner' => 'nullable|exists:users,usr_id',
             'stage' => 'required|in:' . implode(',', array_keys(config('constants.DEAL_STAGES'))),
             'value' => 'sometimes|nullable|numeric',
@@ -199,11 +199,27 @@ class SalesPipelineController extends Controller {
         }
     }
 
+    protected function findDealByAnyId($dealId)
+    {
+        if (empty($dealId)) {
+            return null;
+        }
+
+        $numericId = is_numeric($dealId) ? (int)$dealId : (int)str_replace(['D-', 'SSP-'], '', (string)$dealId);
+
+        return SalesPipeline::where(function ($q) use ($dealId, $numericId) {
+            $q->where('ssp_id', $numericId)
+              ->orWhere('ssp_code', (string)$dealId)
+              ->orWhere('ssp_code', 'D-' . (string)$dealId)
+              ->orWhere('ssp_code', 'D-' . str_pad((string)$numericId, 2, '0', STR_PAD_LEFT));
+        })->first();
+    }
+
     public function updateDeal (Request $request, $id) {
         logger($request->all());
         $validated = $request->validate([
             'deal_name' => 'sometimes|required|string|min:2|max:120',
-            'account_client' => 'sometimes|nullable|string|min:2|max:120',
+            'account_client' => 'sometimes|nullable|string|max:120',
             'owner' => 'sometimes|nullable|exists:users,usr_id',
             'stage' => 'sometimes|required|in:' . implode(',', array_keys(config('constants.DEAL_STAGES'))),
             'value' => 'sometimes|nullable|numeric',
@@ -213,7 +229,7 @@ class SalesPipelineController extends Controller {
 
         try {
             // Find the existing deal
-            $deal = SalesPipeline::query()->find($id);
+            $deal = $this->findDealByAnyId($id);
 
             if (!$deal) {
                 return response()->json([
@@ -320,7 +336,7 @@ class SalesPipelineController extends Controller {
 
     public function dealData ($deal_id) {
         // Find the existing deal
-        $deal = SalesPipeline::query()->with('dealOwner:usr_id,usr_name,usr_designation')->find($deal_id);
+        $deal = $this->findDealByAnyId($deal_id);
 
         if (!$deal) {
             return response()->json([
@@ -328,6 +344,8 @@ class SalesPipelineController extends Controller {
                 'message' => 'Deal not found.',
             ], 404);
         }
+
+        $deal->loadMissing('dealOwner:usr_id,usr_name,usr_designation');
 
         return response()->json([
             'success' => true,
@@ -339,7 +357,7 @@ class SalesPipelineController extends Controller {
         $user = $request->user();
 
         // 1. Find the existing deal FIRST
-        $deal = SalesPipeline::query()->find($deal_id);
+        $deal = $this->findDealByAnyId($deal_id);
 
         if (!$deal) {
             return response()->json([

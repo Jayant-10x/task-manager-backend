@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\SubTask;
+use App\Models\Task;
 use App\Services\Audit\AuditService;
 use App\Services\TaskActivityService;
 use Illuminate\Http\Request;
@@ -78,11 +79,28 @@ class SubtaskController extends Controller {
 
     public function addSubtaskCheckList(Request $request, $taskId) {
         $request->validate([
-            'title' => 'required|min:2|:max:200',
+            'title' => 'required|min:2|max:200',
         ]);
 
+        $numericId = is_numeric($taskId) ? (int)$taskId : (int)str_replace('TK-', '', (string)$taskId);
+        $task = Task::query()
+            ->where(function ($q) use ($taskId, $numericId) {
+                $q->where('tsk_id', $numericId)
+                  ->orWhere('tsk_code', (string)$taskId)
+                  ->orWhere('tsk_code', 'TK-' . (string)$taskId)
+                  ->orWhere('tsk_code', 'TK-' . str_pad((string)$numericId, 2, '0', STR_PAD_LEFT));
+            })
+            ->first();
+
+        if (!$task) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Task not found.'
+            ], 404);
+        }
+
         $subtask = SubTask::query()->create([
-            'stk_tsk_id' => $taskId,
+            'stk_tsk_id' => $task->tsk_id,
             'stk_title' => $request->title,
             'stk_updated_by' => setCreatedUpdatedBy(),
             'stk_updated_on' => now(),
@@ -98,7 +116,7 @@ class SubtaskController extends Controller {
                 newValues: [
                     'item' => $subtask->stk_title,
                 ],
-                description: 'Added checklist item on ' . $subtask->parentTask->tsk_code
+                description: 'Added checklist item on ' . ($task->tsk_code ?? 'Task #' . $task->tsk_id)
             );
 
             (new TaskActivityService())->subtaskAdded($subtask->stk_tsk_id, get_logged_in_user_id(), $subtask->stk_title);

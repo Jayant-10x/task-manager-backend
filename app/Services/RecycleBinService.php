@@ -38,6 +38,13 @@ class RecycleBinService
         $cols = $this->getTableColumns($table);
         $row = array_intersect_key($row, array_flip($cols));
 
+        // Normalize ISO 8601 datetime strings to 'Y-m-d H:i:s' for MariaDB / MySQL
+        foreach ($row as $k => $v) {
+            if (is_string($v) && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/', $v)) {
+                $row[$k] = date('Y-m-d H:i:s', strtotime($v));
+            }
+        }
+
         // 2. Automatically infer the primary key column if not explicitly passed
         if ($primaryKeyCol === null) {
             $primaryKeyCol = match ($table) {
@@ -328,7 +335,7 @@ class RecycleBinService
                 newValues: [
                     'bin_id' => $bin_id,
                 ],
-                description: 'Restored ' . $t['tsk_code'] . ' - ' . $t['tsk_name'] . 'from the Recycle Bin.',
+                description: 'Restored ' . $t['tsk_code'] . ' - ' . ($t['tsk_title'] ?? $t['tsk_name'] ?? 'Task') . ' from the Recycle Bin.',
             );
         }
 
@@ -544,8 +551,8 @@ class RecycleBinService
         switch ($module) {
             case 'task':
                 $ret_val = [
-                    'main_label' => 'Permanently deleted ' . $snap['task']['tsk_code'] . ' - ' . $snap['task']['tsk_name'],
-                    'label' => $snap['task']['tsk_code'] . ' - ' . $snap['task']['tsk_name'],
+                    'main_label' => 'Permanently deleted ' . ($snap['task']['tsk_code'] ?? 'Task') . ' - ' . ($snap['task']['tsk_title'] ?? $snap['task']['tsk_name'] ?? 'Task'),
+                    'label' => ($snap['task']['tsk_code'] ?? 'Task') . ' - ' . ($snap['task']['tsk_title'] ?? $snap['task']['tsk_name'] ?? 'Task'),
                     'files' => !empty($snap['task']['attachments']) ? count($snap['task']['attachments']) : 0,
                 ];
                 break;
@@ -567,14 +574,14 @@ class RecycleBinService
             case 'sales_pipeline':
             case 'deal':
                 $ret_val = [
-                    'main_label' => 'Permanently deleted ' . $snap['sales_pipeline']['ssp_code'] . ' (' . $snap['sales_pipeline']['ssp_name'] . ')',
+                    'main_label' => 'Permanently deleted ' . ($snap['sales_pipeline']['ssp_code'] ?? $snap['deal']['ssp_code'] ?? 'Deal') . ' (' . ($snap['sales_pipeline']['ssp_name'] ?? $snap['deal']['ssp_name'] ?? '') . ')',
                     'label' => $snap['sales_pipeline']['ssp_code'] . ' - ' . $snap['sales_pipeline']['ssp_name'],
                     'files' => !empty($snap['sales_pipeline']['attachments']) ? count($snap['sales_pipeline']['attachments']) : 0,
                 ];
                 break;
             case 'attachment':
                 $ret_val = [
-                    'main_label' => 'Permanently deleted ' . $snap['attachment']['atc_file_name'] . ' (' . $snap['attachment']['task']['tsk_code'] . ')',
+                    'main_label' => 'Permanently deleted ' . ($snap['attachment']['atc_file_name'] ?? 'File') . ' (' . ($snap['attachment']['task']['tsk_code'] ?? $snap['attachment']['atc_tsk_id'] ?? '') . ')',
                     'label' => $snap['attachment']['atc_file_name'] . ' (' . $snap['attachment']['task']['tsk_code'] . ')',
                     'files' => 0,
                 ];

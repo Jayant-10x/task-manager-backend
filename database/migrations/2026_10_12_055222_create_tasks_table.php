@@ -19,7 +19,7 @@ return new class extends Migration {
 
             $table->enum($this->_pre_col . 'category', array_keys(config('constants.TASK_CATEGORY')))->nullable()->default(null);
             $table->enum($this->_pre_col . 'priority', array_keys(config('constants.TASK_PRIORITY')))->default('medium')->index();
-            $table->enum($this->_pre_col . 'status', array_keys(config('constants.TASK_STATUS')))->default('to_to')->index();
+            $table->enum($this->_pre_col . 'status', array_keys(config('constants.TASK_STATUS')))->default('to_do')->index();
 
             $table->date($this->_pre_col . 'start_date')->nullable();
             $table->date($this->_pre_col . 'due_date')->nullable()->index();

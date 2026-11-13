@@ -16,6 +16,7 @@ class AuditLogController extends Controller {
             'record_id' => ['sometimes', 'string', 'max:40'],
             'from' => ['sometimes', 'date'],
             'to' => ['sometimes', 'date', 'after_or_equal:from'],
+            'q' => ['sometimes', 'string', 'max:100'],
         ]);
 
         $logs = AuditLog::query()
@@ -29,7 +30,16 @@ class AuditLogController extends Controller {
             )
             ->when(
                 $filters['user_id'] ?? null,
-                fn($q, $value) => $q->where('alg_user_id', $value)
+                fn($q, $value) => $q->where('alg_usr_id', $value)
+            )
+            ->when(
+                $filters['q'] ?? null,
+                fn($q, $value) => $q->where(function ($sub) use ($value) {
+                    $sub->where('alg_description', 'LIKE', "%{$value}%")
+                        ->orWhere('alg_record_id', 'LIKE', "%{$value}%")
+                        ->orWhere('alg_actor_name', 'LIKE', "%{$value}%")
+                        ->orWhere('alg_actor_email', 'LIKE', "%{$value}%");
+                })
             )
             ->when(
                 $filters['record_id'] ?? null,

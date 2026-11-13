@@ -21,8 +21,10 @@ class Notification extends Model {
         'not_meta_info',
         'not_actor',
         'not_is_read',
-        'not_created_by', // Update if named differently by your helper
+        'not_created_by',
         'not_created_on',
+        'not_updated_by',
+        'not_updated_on',
     ];
 
     protected $casts = [

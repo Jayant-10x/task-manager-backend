@@ -25,7 +25,9 @@ class User extends Authenticatable {
         'usr_role',
         'usr_designation',
         'usr_dept',
+        'usr_custom_dept',
         'usr_city',
+        'usr_avatar',
         'usr_status',
         'usr_online',
         'usr_last_seen',
@@ -85,8 +87,14 @@ class User extends Authenticatable {
      */
     public function getFlattenedPermissions (): array {
         $nestedConfig = config('app_modules', []);
-        $userPermissions = $this->modulePermissions->keyBy('ump_module_slug');
+        $isSuper = (bool)$this->usr_is_super_admin;
 
+        if (!$isSuper && $this->modulePermissions->isEmpty()) {
+            $this->assignDefaultModulePermissions();
+            $this->unsetRelation('modulePermissions');
+        }
+
+        $userPermissions = $this->modulePermissions->keyBy('ump_module_slug');
         $groupedPermissions = [];
 
         foreach ($nestedConfig as $groupKey => $group) {
@@ -100,17 +108,18 @@ class User extends Authenticatable {
                 }
 
                 $perm = $userPermissions->get($slug);
+                $canView = $isSuper || ($perm && $perm->ump_can_view);
 
                 // Include only if the user has view permission for this module
-                if ($perm && $perm->ump_can_view) {
+                if ($canView) {
                     $permittedModules[$slug] = [
                         'label' => $info['label'] ?? ucfirst($slug),
                         'icon' => $info['icon'] ?? '',
                         'in_sidebar' => $info['in_sidebar'] ?? true,
-                        'can_view' => (bool)$perm->ump_can_view,
-                        'can_add' => (bool)$perm->ump_can_add,
-                        'can_edit' => (bool)$perm->ump_can_edit,
-                        'can_delete' => (bool)$perm->ump_can_delete,
+                        'can_view' => true,
+                        'can_add' => $isSuper || (bool)($perm?->ump_can_add),
+                        'can_edit' => $isSuper || (bool)($perm?->ump_can_edit),
+                        'can_delete' => $isSuper || (bool)($perm?->ump_can_delete),
                         'route' => $info['route'] ?? '',
                         'description' => $info['description'] ?? ''
                     ];
@@ -127,6 +136,67 @@ class User extends Authenticatable {
         }
 
         return $groupedPermissions;
+    }
+
+    /**
+     * Assigns role-based default module permissions to this user in user_module_permissions.
+     */
+    public function assignDefaultModulePermissions(): void {
+        $role = strtolower($this->usr_role ?? 'employee');
+        $isSuper = (bool)$this->usr_is_super_admin;
+        $modules = config('app_modules', []);
+
+        $records = [];
+        $now = now();
+
+        foreach ($modules as $groupKey => $group) {
+            foreach ($group as $slug => $info) {
+                if (!is_array($info)) continue;
+
+                $canView = false;
+                $canAdd = false;
+                $canEdit = false;
+                $canDelete = false;
+
+                if ($isSuper || $role === 'admin') {
+                    $canView = true;
+                    $canAdd = true;
+                    $canEdit = true;
+                    $canDelete = true;
+                } elseif ($role === 'manager') {
+                    if (!in_array($slug, ['password_reset_request', 'audit_log', 'recycle_bin', 'settings'])) {
+                        $canView = true;
+                        $canAdd = true;
+                        $canEdit = true;
+                        $canDelete = !in_array($slug, ['members', 'projects']);
+                    }
+                } else { // employee
+                    if (in_array($slug, ['dashboard', 'my_tasks', 'calendar', 'notifications', 'task_board', 'projects', 'sales_pipeline', 'all_tasks', 'team_tasks'])) {
+                        $canView = true;
+                        $canAdd = in_array($slug, ['my_tasks']);
+                        $canEdit = in_array($slug, ['my_tasks']);
+                        $canDelete = false;
+                    }
+                }
+
+                $records[] = [
+                    'ump_usr_id' => $this->usr_id,
+                    'ump_module_slug' => $slug,
+                    'ump_can_view' => $canView ? 1 : 0,
+                    'ump_can_add' => $canAdd ? 1 : 0,
+                    'ump_can_edit' => $canEdit ? 1 : 0,
+                    'ump_can_delete' => $canDelete ? 1 : 0,
+                    'ump_created_on' => $now,
+                    'ump_updated_on' => $now,
+                ];
+            }
+        }
+
+        UserModulePermission::upsert(
+            $records,
+            ['ump_usr_id', 'ump_module_slug'],
+            ['ump_can_view', 'ump_can_add', 'ump_can_edit', 'ump_can_delete', 'ump_updated_on']
+        );
     }
 
     public function userTasks (): HasMany {

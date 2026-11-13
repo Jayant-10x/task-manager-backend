@@ -11,6 +11,7 @@ class ProjectMember extends Model {
 
     const DELETED_AT = 'pmb_deleted_on';
     public $timestamps = false;
+    public $incrementing = false;
     protected $primaryKey = null;
 
     protected $fillable = [

@@ -13,6 +13,7 @@ class UserModulePermission extends Model {
     const UPDATED_AT = 'ump_updated_on';
     const DELETED_AT = 'ump_deleted_on';
     public $timestamps = true;
+    public $incrementing = false;
     protected $table = 'user_module_permissions';
     protected $primaryKey = null;
     protected $fillable = [

@@ -28,7 +28,12 @@ class TaskController extends Controller {
 
     public function myTasks (Request $request) {
         $loggedInUserId = get_logged_in_user_id();
-        $all_my_tasks = Task::with(['assignees.assignedUser:usr_id,usr_name', 'subtasks:stk_tsk_id,stk_id,stk_title', 'project:pro_id,pro_name'])
+        $all_my_tasks = Task::with([
+            'assignedBy:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+            'assignees.assignedUser:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+            'subtasks:stk_tsk_id,stk_id,stk_title',
+            'project:pro_id,pro_code,pro_name'
+        ])
             ->withCount('comments')
             ->whereHas('assignees', function ($query) use ($loggedInUserId) {
                 $query->where('tsa_usr_id', $loggedInUserId);
@@ -49,7 +54,12 @@ class TaskController extends Controller {
     public function assignedByMe (Request $request) {
         $loggedInUserChildren = get_users_children_in_depth(get_logged_in_user_id(), true);
 
-        $task_assigned_by_me = Task::with(['assignees.assignedUser:usr_id,usr_name', 'subtasks:stk_tsk_id,stk_id,stk_title', 'project:pro_id,pro_name'])->withCount('comments')->where('tasks.tsk_assigned_by', '=', get_logged_in_user_id())->orWhereIn('tasks.tsk_assigned_by', array_merge($loggedInUserChildren, [get_logged_in_user_id()]))->get();
+        $task_assigned_by_me = Task::with([
+            'assignedBy:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+            'assignees.assignedUser:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+            'subtasks:stk_tsk_id,stk_id,stk_title',
+            'project:pro_id,pro_code,pro_name'
+        ])->withCount('comments')->where('tasks.tsk_assigned_by', '=', get_logged_in_user_id())->orWhereIn('tasks.tsk_assigned_by', array_merge($loggedInUserChildren, [get_logged_in_user_id()]))->get();
         $projectIds = $task_assigned_by_me->pluck('tsk_pro_id')->unique()->filter()->values();
 
         $projects = Project::query()
@@ -68,7 +78,11 @@ class TaskController extends Controller {
         $loggedInUserId = get_logged_in_user_id();
 
         $loggedInUserChildren = get_users_children_in_depth($loggedInUserId, true);
-        $taskQuery = Task::query()->with(['assignees.assignedUser:usr_id,usr_name', 'subtasks:stk_tsk_id,stk_id,stk_title',]);
+        $taskQuery = Task::query()->with([
+            'assignedBy:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+            'assignees.assignedUser:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+            'subtasks:stk_tsk_id,stk_id,stk_title',
+        ]);
 
         if (!is_admin()) {
             $taskQuery->where(function ($query) use ($loggedInUserId, $loggedInUserChildren) {
@@ -145,7 +159,8 @@ class TaskController extends Controller {
             'assignee_ids' => 'required|array|',
             'assignee_ids.*' => 'exists:users,usr_id',
             'checklist' => 'nullable|array',
-            'checklist.*' => 'nullable|min:2|max:200',
+            'checklist.*.title' => 'nullable|string|min:2|max:200',
+            'checklist.*.done' => 'nullable',
         ]);
         $task = null;
         DB::transaction(function () use ($validated, &$task) {
@@ -162,7 +177,7 @@ class TaskController extends Controller {
             $task->tsk_code = $task_code;
             $task->tsk_title = $validated['title'];
             $task->tsk_description = $validated['description'] ?? null;
-            $task->tsk_pro_id = $this->getOrCreateProjectForTask($validated['pro_name']);
+            $task->tsk_pro_id = !empty($validated['pro_name']) ? $this->getOrCreateProjectForTask($validated['pro_name']) : null;
             $task->tsk_category = $validated['category'];
             $task->tsk_priority = $validated['priority'];
             $task->tsk_status = $validated['status'];
@@ -245,10 +260,29 @@ class TaskController extends Controller {
         ], 201);
     }
 
+    protected function findTaskByAnyId($taskId, $withTrashed = false)
+    {
+        if (empty($taskId)) {
+            return null;
+        }
+
+        $numericId = is_numeric($taskId) ? (int)$taskId : (int)str_replace('TK-', '', (string)$taskId);
+
+        $query = $withTrashed ? Task::withTrashed() : Task::query();
+
+        return $query->where(function ($q) use ($taskId, $numericId) {
+            $q->where('tsk_id', $numericId)
+              ->orWhere('tsk_code', (string)$taskId)
+              ->orWhere('tsk_code', 'TK-' . (string)$taskId)
+              ->orWhere('tsk_code', 'TK-' . str_pad((string)$numericId, 2, '0', STR_PAD_LEFT));
+        })->first();
+    }
+
     public function editTask ($task_id) {
         if (!empty($task_id)) {
-            $task_data = Task::with(['assignees', 'subtasks:stk_id,stk_title,stk_tsk_id'])->where('tsk_id', '=', $task_id)->first();
-            if (!empty($task_data)) {
+            $task = $this->findTaskByAnyId($task_id);
+            if (!empty($task)) {
+                $task_data = Task::with(['assignees', 'subtasks:stk_id,stk_title,stk_tsk_id'])->where('tsk_id', '=', $task->tsk_id)->first();
                 return response()->json([
                     'message' => 'Task found.',
                     'task_data' => $task_data,
@@ -267,8 +301,17 @@ class TaskController extends Controller {
 
     public function viewTask ($task_id) {
         if (!empty($task_id)) {
-            $task_data = Task::with(['assignedBy:usr_id,usr_name', 'assignees.assignedUser:usr_name,usr_designation,usr_role,usr_id', 'subtasks', 'comments.commentAuthor:usr_id,usr_name', 'attachments:atc_id,atc_tsk_id,atc_file_name,atc_stored_as,atc_size_kb,atc_created_at', 'activities.activist:usr_id,usr_name', 'project:pro_id,pro_name'])->where('tsk_id', '=', $task_id)->first();
-            if (!empty($task_data)) {
+            $task = $this->findTaskByAnyId($task_id);
+            if (!empty($task)) {
+                $task_data = Task::with([
+                    'assignedBy:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+                    'assignees.assignedUser:usr_name,usr_designation,usr_role,usr_id,usr_avatar',
+                    'subtasks',
+                    'comments.commentAuthor:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+                    'attachments:atc_id,atc_tsk_id,atc_file_name,atc_stored_as,atc_size_kb,atc_created_at',
+                    'activities.activist:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+                    'project:pro_id,pro_code,pro_name'
+                ])->where('tsk_id', '=', $task->tsk_id)->first();
                 return response()->json([
                     'message' => 'Task found.',
                     'task_data' => $task_data,
@@ -286,6 +329,20 @@ class TaskController extends Controller {
     }
 
 
+    protected function canUserMutateTask($user, Task $task): bool
+    {
+        if (!$user) return false;
+        if ($user->usr_is_super_admin || $user->usr_role === 'admin') return true;
+        $teamIds = array_unique(array_merge([$user->usr_id], get_users_children_in_depth($user->usr_id, true) ?? []));
+        if (in_array((int)$task->tsk_assigned_by, array_map('intval', $teamIds), true)) {
+            return true;
+        }
+        return $task->assignees()
+            ->whereIn('tsa_usr_id', $teamIds)
+            ->whereNull('tsa_deleted_on')
+            ->exists();
+    }
+
     public function updateTask (Request $request, $task_id) {
         logger($request->all());
 
@@ -300,7 +357,7 @@ class TaskController extends Controller {
             'due_date' => 'nullable|date',
             'est_hours' => 'nullable|numeric',
             'spent_hours' => 'nullable|numeric',
-            'tags' => 'nullable|min:2|max:250',
+            'tags' => 'nullable|min:1|max:250',
             // 'progress' => 'required|min:0|max:100',
             'assignee_ids' => 'required|array|min:1',
             'assignee_ids.*' => 'exists:users,usr_id',
@@ -316,13 +373,24 @@ class TaskController extends Controller {
             'checklist.*.done' => 'required|boolean',
         ]);
 
-        $taskExist = Task::query()
-            ->with([
-                'assignees',
-                'subtasks:stk_id,stk_tsk_id,stk_title',
-            ])
-            ->where('tsk_id', '=', $task_id)
-            ->first();
+        $taskExist = $this->findTaskByAnyId($task_id);
+
+        if (!$taskExist) {
+            return response()->json([
+                'message' => 'Task not found.',
+            ], 404);
+        }
+
+        if (!$this->canUserMutateTask($request->user(), $taskExist)) {
+            return response()->json([
+                'message' => 'Forbidden. You can only modify tasks assigned to or created by you or your team.',
+            ], 403);
+        }
+
+        $taskExist->loadMissing([
+            'assignees',
+            'subtasks:stk_id,stk_tsk_id,stk_title',
+        ]);
 
         // Capture original values BEFORE changing the model
         $originalValues = $taskExist->getRawOriginal();
@@ -349,6 +417,9 @@ class TaskController extends Controller {
                 'tsk_est_hours' => $validated['est_hours'] ?? 0.0,
                 'tsk_spent_hours' => $validated['spent_hours'] ?? 0.0,
                 'tsk_tags' => $validated['tags'] ?? null,
+                'tsk_completed_at' => $validated['status'] === 'completed'
+                    ? ($taskExist->tsk_completed_at ?? now())
+                    : null,
                 // 'tsk_progress' => $validated['progress'] ?? 0,
                 'tsk_updated_by' => setCreatedUpdatedBy(),
                 'tsk_updated_on' => $current_date,
@@ -545,7 +616,7 @@ class TaskController extends Controller {
             $notification_data = [
                 'kind' => 'task_assigned',
                 'title' => 'Task assigned',
-                'body' => 'New task, ' . $taskExist->tsk_name . '(' . $taskExist->tsk_id . ')' . ' assigned to you.',
+                'body' => 'New task, ' . $taskExist->tsk_title . ' (' . ($taskExist->tsk_code ?? $taskExist->tsk_id) . ') assigned to you.',
                 'actor' => get_logged_in_user_name(),
                 'redirect_to' => route('task.view', ['tsk_id' => $taskExist->tsk_id]),
                 'extra_params' => [
@@ -611,13 +682,20 @@ class TaskController extends Controller {
         $user = $request->user();
 
         // 1. Fetch task with relations before deletion
-        $task = Task::where('tsk_id', $task_id)->first();
+        $task = $this->findTaskByAnyId($task_id);
 
         if (!$task) {
             return response()->json([
                 'status' => false,
                 'message' => 'Task not found.',
             ], 404);
+        }
+
+        if (!$this->canUserMutateTask($user, $task)) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Forbidden. You do not have permission to delete this task.',
+            ], 403);
         }
 
         // Capture task representation before deletion for audit and response payload
@@ -676,7 +754,12 @@ class TaskController extends Controller {
         $loggedInUserId = get_logged_in_user_id();
 
         $loggedInUserChildren = get_users_children_in_depth($loggedInUserId, true);
-        $taskQuery = Task::query()->with(['assignees.assignedUser:usr_id,usr_name', 'subtasks:stk_tsk_id,stk_id,stk_title', 'project:pro_id,pro_name'])->withCount('comments');
+        $taskQuery = Task::query()->with([
+            'assignedBy:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+            'assignees.assignedUser:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+            'subtasks:stk_tsk_id,stk_id,stk_title',
+            'project:pro_id,pro_code,pro_name'
+        ])->withCount('comments');
         if (!is_admin()) {
             $taskQuery->where(function ($query) use ($loggedInUserId, $loggedInUserChildren) {
                 $query->where('tasks.tsk_assigned_by', $loggedInUserId)
@@ -773,6 +856,7 @@ class TaskController extends Controller {
             // 6. Build the response for this user.
             $result[$userId] = [
                 'usr_name' => $user->usr_name,
+                'usr_avatar' => $user->usr_avatar,
                 'usr_designation' => $user->usr_role == 'admin' ? 'Admin' : get_dash_on_empty($user->usr_designation),
                 'tasks' => $formattedTasks,
                 'open_tasks' => $openTasksCount,
@@ -853,6 +937,15 @@ class TaskController extends Controller {
                 'member_email' => get_dash_on_empty($user->usr_email),
                 'member_phone' => get_dash_on_empty($user->usr_phone),
                 'member_place' => get_dash_on_empty($user->usr_city),
+                'member_dept' => $user->usr_dept,
+                'member_custom_dept' => $user->usr_custom_dept,
+                'usr_dept' => $user->usr_dept,
+                'usr_custom_dept' => $user->usr_custom_dept,
+                'usr_reporting_to' => $user->usr_reporting_to,
+                'usr_joined' => $user->usr_joined,
+                'usr_is_super_admin' => (bool)$user->usr_is_super_admin,
+                'member_avatar' => $user->usr_avatar,
+                'usr_avatar' => $user->usr_avatar,
 
                 'task_statistics' => [
                     'open_tasks' => $openTasksCount,
@@ -870,7 +963,7 @@ class TaskController extends Controller {
             'status' => 'required|in:' . implode(',', array_keys(config('constants.TASK_STATUS'))),
         ]);
 
-        $task = Task::withTrashed()->find($taskId);
+        $task = $this->findTaskByAnyId($taskId, true);
 
         // 1. Doesn't exist at all
         if (!$task) {
@@ -886,10 +979,19 @@ class TaskController extends Controller {
             ], 400); // 400 Bad Request or 410 Gone
         }
 
+        if (!$this->canUserMutateTask($request->user(), $task)) {
+            return response()->json([
+                'message' => 'Forbidden. You can only change status of tasks assigned to or created by you or your team.'
+            ], 403);
+        }
+
         //old status
         $oldStatus = $task->tsk_status;
 
         $task->tsk_status = $request->status;
+        $task->tsk_completed_at = ($request->status === 'completed')
+            ? ($task->tsk_completed_at ?? now())
+            : null;
         $task->save();
 
         (new TaskActivityService())->statusChanged($task->tsk_id, get_logged_in_user_id(), config('constants.TASK_STATUS')[$request->status]);
@@ -898,7 +1000,7 @@ class TaskController extends Controller {
         app(AuditService::class)->log(
             action: 'status',
             module: 'task',
-            record: $task->stk_tsk_id,
+            record: $task->tsk_id,
             oldValues: [
                 'status' => $oldStatus,
             ],
@@ -910,7 +1012,7 @@ class TaskController extends Controller {
         $notification_data = [
             'kind' => 'task_status',
             'title' => 'Task status changed',
-            'body' => $task->tsk_code . ' - ' . $task->tsk_name . ' moved to ' . config('constants.TASK_STATUS')[$task->tsk_status],
+            'body' => $task->tsk_code . ' - ' . $task->tsk_title . ' moved to ' . config('constants.TASK_STATUS')[$task->tsk_status],
             'actor' => get_logged_in_user_name(),
             'redirect_to' => route('task.view', ['tsk_id' => $task->tsk_id]),
             'extra_params' => [
@@ -942,20 +1044,33 @@ class TaskController extends Controller {
             'mentions.*' => 'integer|exists:users,usr_id',
         ]);
 
-        // Handle nullable array: pass array if present, or null
-        $mentions = $request->filled('mentions') ? $request->input('mentions') : null;
+        // Normalize deduplicated mentioned user IDs
+        $rawMentions = $request->filled('mentions') ? (array) $request->input('mentions') : [];
+        $mentionIds = array_values(array_unique(array_filter(array_map('intval', $rawMentions), fn ($id) => $id > 0)));
+        $mentions = !empty($mentionIds) ? $mentionIds : null;
+
+        $task = $this->findTaskByAnyId($taskId);
+        if (!$task) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Task not found.'
+            ], 404);
+        }
+        $realTaskId = $task->tsk_id;
+        $authorId = (int) get_logged_in_user_id();
 
         $comment = TaskComment::create([
-            'tsc_tsk_id' => $taskId,
-            'tsc_author' => get_logged_in_user_id(),
+            'tsc_tsk_id' => $realTaskId,
+            'tsc_author' => $authorId,
             'tsc_comment' => $request->comment,
             'tsc_mentions' => $mentions,
             'tsc_updated_by' => setCreatedUpdatedBy(),
             'tsc_updated_on' => now(),
         ]);
+        $comment->setRelation('commentedTask', $task);
 
-        (new TaskActivityService())->commentAdded($taskId, get_logged_in_user_id());
-        //Log accurate states
+        (new TaskActivityService())->commentAdded($realTaskId, $authorId);
+        // Log accurate states
         app(AuditService::class)->log(
             action: 'comment',
             module: 'task',
@@ -963,34 +1078,68 @@ class TaskController extends Controller {
             oldValues: [],
             newValues: [
                 'comment' => $request->comment,
+                'mentions' => $mentionIds,
             ],
             description: 'Commented on ' . $comment->commentedTask->tsk_code,
         );
 
+        $actorName = get_logged_in_user_name();
+        $extraParams = [
+            'tsk_id' => $comment->commentedTask->tsk_id,
+            'tsk_title' => $comment->commentedTask->tsk_title,
+            'tsk_code' => $comment->commentedTask->tsk_code,
+        ];
+        $redirectUrl = route('task.view', ['tsk_id' => $comment->commentedTask->tsk_id]);
+
+        // 1. Notify mentioned users first (excluding the comment author)
+        $notifiedUserIds = [$authorId];
+        $mentionedNames = [];
+        $mentionTargetIds = array_values(array_diff($mentionIds, [$authorId]));
+        if (!empty($mentionTargetIds)) {
+            $mentionedUsers = User::query()
+                ->whereIn('usr_id', $mentionTargetIds)
+                ->get(['usr_id', 'usr_name']);
+            foreach ($mentionedUsers as $mentionedUser) {
+                $mentionedNames[] = $mentionedUser->usr_name;
+                $notifiedUserIds[] = (int) $mentionedUser->usr_id;
+                sendNotification([
+                    'receiver_id' => $mentionedUser->usr_id,
+                    'kind' => 'mention',
+                    'title' => $actorName . ' mentioned you on ' . $comment->commentedTask->tsk_code,
+                    'body' => $request->comment,
+                    'actor' => $actorName,
+                    'redirect_to' => $redirectUrl,
+                    'extra_params' => $extraParams,
+                ]);
+            }
+        }
+
+        // 2. Notify remaining task assignees (excluding author & already-notified mentioned users)
         $notification_data = [
-            'kind' => 'task_comment',
+            'kind' => 'comment',
             'title' => 'New comment on ' . $comment->commentedTask->tsk_code,
-            'body' => $request->comment . (!empty($mentions) ? '(mention check)' : ''),
-            'actor' => get_logged_in_user_name(),
-            'redirect_to' => route('task.view', ['tsk_id' => $comment->commentedTask->tsk_id]),
-            'extra_params' => [
-                'tsk_id' => $comment->commentedTask->tsk_id,
-                'tsk_title' => $comment->commentedTask->tsk_title,
-                'tsk_code' => $comment->commentedTask->tsk_code,
-            ]
+            'body' => $request->comment,
+            'actor' => $actorName,
+            'redirect_to' => $redirectUrl,
+            'extra_params' => $extraParams,
         ];
         $task_assignees = $comment->commentedTask->assignees()->get()->toArray();
         if (!empty($task_assignees)) {
             foreach ($task_assignees as $user) {
-                if ($user['tsa_usr_id'] == get_logged_in_user_id())
+                $assigneeId = (int) $user['tsa_usr_id'];
+                if (in_array($assigneeId, $notifiedUserIds, true)) {
                     continue;
-                $notification_data['receiver_id'] = $user['tsa_usr_id'];
+                }
+                $notifiedUserIds[] = $assigneeId;
+                $notification_data['receiver_id'] = $assigneeId;
                 sendNotification($notification_data);
             }
         }
+
         return response()->json([
             'message' => 'Comment added successfully',
-            'data' => $comment
+            'data' => $comment->load('commentAuthor:usr_id,usr_name,usr_avatar,usr_designation,usr_role'),
+            'mentioned' => $mentionedNames,
         ], 201);
     }
 
@@ -1007,9 +1156,7 @@ class TaskController extends Controller {
         ]);
 
         // 2. Find the task.
-        $task = Task::query()
-            ->where('tsk_id', $taskId)
-            ->first();
+        $task = $this->findTaskByAnyId($taskId);
 
         if (!$task) {
             return response()->json([
@@ -1250,7 +1397,15 @@ class TaskController extends Controller {
 
     private function getOrCreateProjectForTask ($requested_pro_name) {
         $trimmed_pro_name = trim($requested_pro_name);
-        $existProId = Project::query()->where('pro_name', 'LIKE', "%{$trimmed_pro_name}%")->pluck('pro_id')->first();
+        if (empty($trimmed_pro_name)) {
+            return null;
+        }
+        $existProId = Project::query()
+            ->where('pro_name', $trimmed_pro_name)
+            ->orWhere('pro_code', $trimmed_pro_name)
+            ->orWhere('pro_name', 'LIKE', "%{$trimmed_pro_name}%")
+            ->pluck('pro_id')
+            ->first();
         if (empty($existProId)) {
             $lastProject = Project::orderBy('pro_id', 'desc')->first();
 

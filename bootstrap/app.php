@@ -18,10 +18,10 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->api(prepend: [
             ForceJsonResponse::class,
-            EnforceTokenInactivity::class,
         ]);
         $middleware->alias([
             'permission' => CheckModulePermission::class,
+            'enforce.inactivity' => EnforceTokenInactivity::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

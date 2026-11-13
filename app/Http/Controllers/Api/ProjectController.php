@@ -26,7 +26,16 @@ class ProjectController extends Controller {
         // 1. Build Base Query for User Permissions
         $baseQuery = Project::query();
         if (!is_admin()) {
-            $baseQuery->where('pro_manager', '=', $loggedInUserId);
+            $teamIds = array_unique(array_merge([$loggedInUserId], get_users_children_in_depth($loggedInUserId, true) ?? []));
+            $baseQuery->where(function ($q) use ($teamIds) {
+                $q->whereIn('pro_manager', $teamIds)
+                  ->orWhereHas('projectMembers', function ($mq) use ($teamIds) {
+                      $mq->whereIn('pmb_usr_id', $teamIds);
+                  })
+                  ->orWhereHas('tasks.assignees', function ($tq) use ($teamIds) {
+                      $tq->whereIn('tsa_usr_id', $teamIds)->whereNull('tsa_deleted_on');
+                  });
+            });
         }
 
         // 2. Compute Summary Tab Counts for Header Badges
@@ -42,8 +51,8 @@ class ProjectController extends Controller {
 
         $projects = $baseQuery
             ->with([
-                'projectManager:usr_id,usr_name',
-                'projectMembers.member:usr_id,usr_name',
+                'projectManager:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
+                'projectMembers.member:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
             ])
             ->withCount([
                 // Count open tasks (to_do, in_progress, on_hold, review)
@@ -85,13 +94,13 @@ class ProjectController extends Controller {
                     ];
                 });
 
-            // Compute done subtasks count directly from subtasks relation
-            $doneSubtasksCount = Subtask::whereIn('stk_tsk_id', function ($q) use ($project) {
-                $q->select('tsk_id')->from('tasks')->where('tsk_pro_id', $project->pro_id);
+            // Compute done subtasks count directly from subtasks relation (excluding soft-deleted tasks/subtasks)
+            $doneSubtasksCount = SubTask::whereHas('parentTask', function ($q) use ($project) {
+                $q->where('tsk_pro_id', $project->pro_id);
             })->where('stk_done', 1)->count();
 
-            $totalSubtasksCount = Subtask::whereIn('stk_tsk_id', function ($q) use ($project) {
-                $q->select('tsk_id')->from('tasks')->where('tsk_pro_id', $project->pro_id);
+            $totalSubtasksCount = SubTask::whereHas('parentTask', function ($q) use ($project) {
+                $q->where('tsk_pro_id', $project->pro_id);
             })->count();
 
             return [
@@ -109,6 +118,8 @@ class ProjectController extends Controller {
                 'start_date' => $project->pro_start_date ?? null,
                 'due_date' => $project->pro_due_date ?? null,
                 'pro_budget' => $project->pro_budget ?? 0.00,
+                'pro_updated_on' => $project->pro_updated_on ?? $project->pro_created_on ?? null,
+                'pro_created_on' => $project->pro_created_on ?? null,
                 'project_manager' => $project->projectManager ? [
                     'usr_id' => $project->projectManager->usr_id,
                     'usr_name' => $project->projectManager->usr_name,
@@ -125,13 +136,52 @@ class ProjectController extends Controller {
         ]);
     }
 
+    protected function findProjectByAnyId($proId)
+    {
+        if (empty($proId)) {
+            return null;
+        }
+
+        $numericId = is_numeric($proId) ? (int)$proId : (int)str_replace('P-', '', (string)$proId);
+
+        return Project::where(function ($q) use ($proId, $numericId) {
+            $q->where('pro_id', $numericId)
+              ->orWhere('pro_code', (string)$proId)
+              ->orWhere('pro_code', 'P-' . (string)$proId)
+              ->orWhere('pro_code', 'P-' . str_pad((string)$numericId, 2, '0', STR_PAD_LEFT));
+        })->first();
+    }
+
     public function viewProject ($pro_id) {
+        $projectFound = $this->findProjectByAnyId($pro_id);
+        if (!$projectFound) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Project Not Found.',
+            ], 404);
+        }
+
+        if (!is_admin()) {
+            $loggedInUserId = get_logged_in_user_id();
+            $teamIds = array_unique(array_merge([$loggedInUserId], get_users_children_in_depth($loggedInUserId, true) ?? []));
+            $hasAccess = in_array((int)$projectFound->pro_manager, array_map('intval', $teamIds), true)
+                || $projectFound->projectMembers()->whereIn('pmb_usr_id', $teamIds)->exists()
+                || $projectFound->tasks()->whereHas('assignees', fn($q) => $q->whereIn('tsa_usr_id', $teamIds)->whereNull('tsa_deleted_on'))->exists();
+            if (!$hasAccess) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Forbidden. You do not have access to this project.',
+                ], 403);
+            }
+        }
+
+        $numericProId = $projectFound->pro_id;
         $project_data = Project::query()
             ->with([
-                'projectManager:usr_id,usr_name',
+                'projectManager:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
                 'tasks' => function ($query) {
-                    $query->select('tsk_id', 'tsk_code', 'tsk_title', 'tsk_tags', 'tsk_priority', 'tsk_status', 'tsk_due_date', 'tsk_pro_id', 'tsk_category')
-                        ->with(['project:pro_id,pro_name', 'subtasks:stk_tsk_id,stk_id,stk_title,stk_done'])
+                    $query->select('tsk_id', 'tsk_code', 'tsk_title', 'tsk_tags', 'tsk_priority', 'tsk_status', 'tsk_due_date', 'tsk_pro_id', 'tsk_category', 'tsk_assigned_by')
+                        ->with(['project:pro_id,pro_code,pro_name', 'assignedBy:usr_id,usr_name,usr_avatar,usr_designation,usr_role', 'subtasks:stk_tsk_id,stk_id,stk_title,stk_done'])
                         ->withCount([
                             'subtasks as total_subtask',
                             'subtasks as done_subtask' => function ($subQuery) {
@@ -139,17 +189,17 @@ class ProjectController extends Controller {
                             }
                         ]);
                 },
-                'tasks.assignees.assignedUser:usr_id,usr_name',
+                'tasks.assignees.assignedUser:usr_id,usr_name,usr_avatar,usr_designation,usr_role',
                 'projectMembers' => function ($query) {
                     $query->select('pmb_pro_id', 'pmb_usr_id');
                 },
 
                 'projectMembers.member' => function ($query) {
-                    $query->select('usr_id', 'usr_name', 'usr_designation')
+                    $query->select('usr_id', 'usr_name', 'usr_designation', 'usr_avatar', 'usr_role')
                         ->withCount('userOpenTasks');
                 },
             ])
-            ->where('pro_id', $pro_id)
+            ->where('pro_id', $numericProId)
             ->first();
 
         if ($project_data) {
@@ -281,7 +331,7 @@ class ProjectController extends Controller {
         if ($isProjectSaved) {
             $members = [];
             // project team member store
-            foreach ($request->input('project_members') as $member) {
+            foreach ($request->input('project_members', []) ?? [] as $member) {
                 $members [] = [
                     'pmb_usr_id' => $member,
                     'pmb_pro_id' => $projectObj->pro_id,
@@ -319,6 +369,13 @@ class ProjectController extends Controller {
     }
 
     public function updateProject (Request $request, $pro_id) {
+        $projectExist = $this->findProjectByAnyId($pro_id);
+
+        if (!$projectExist) {
+            return response()->json(['message' => 'Project not found.'], 404);
+        }
+
+        $numericProId = $projectExist->pro_id;
         $request->validate([
             'name' => 'required|string|min:3|max:120',
             'description' => 'nullable|min:3|max:3000',
@@ -331,20 +388,15 @@ class ProjectController extends Controller {
             'project_members' => 'nullable|array',
             'project_members.*' => 'exists:users,usr_id',
         ]);
-        $projectExist = Project::where('pro_id', $pro_id)->first();
 
-        if (!$projectExist) {
-            return response()->json(['message' => 'Project not found.'], 404);
-        }
-
-        return DB::transaction(function () use ($request, $projectExist, $pro_id) {
+        return DB::transaction(function () use ($request, $projectExist, $numericProId) {
             // 1. Get existing member IDs and Name Map BEFORE deletion
-            $existingMemberIds = ProjectMember::where('pmb_pro_id', $pro_id)
+            $existingMemberIds = ProjectMember::where('pmb_pro_id', $numericProId)
                 ->pluck('pmb_usr_id')
                 ->toArray();
 
             $oldMemberNames = ProjectMember::with('member:usr_id,usr_name')
-                ->where('pmb_pro_id', $pro_id)
+                ->where('pmb_pro_id', $numericProId)
                 ->get()
                 ->pluck('member.usr_name', 'member.usr_id')
                 ->toArray();
@@ -366,7 +418,7 @@ class ProjectController extends Controller {
             $projectExist->save();
 
             // 3. Sync members
-            ProjectMember::where('pmb_pro_id', $pro_id)->forceDelete();
+            ProjectMember::where('pmb_pro_id', $numericProId)->forceDelete();
 
             $newMemberIds = $request->input('project_members', []);
 
@@ -442,7 +494,7 @@ class ProjectController extends Controller {
         $user = $request->user();
 
         // 1. Fetch the project model
-        $project = Project::where('pro_id', $pro_id)->first();
+        $project = $this->findProjectByAnyId($pro_id);
 
         if (!$project) {
             return response()->json([

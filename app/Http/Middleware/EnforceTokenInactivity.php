@@ -14,6 +14,16 @@ class EnforceTokenInactivity {
     public function handle (Request $request, Closure $next): Response {
         $user = $request->user();
 
+        if ($user && !$user->usr_status) {
+            if ($user->currentAccessToken()) {
+                $user->currentAccessToken()->delete();
+            }
+            return response()->json([
+                'message' => 'Account is inactive.',
+                'code' => 'ACCOUNT_INACTIVE',
+            ], 403);
+        }
+
         // Apply only to authenticated Sanctum Bearer-token requests.
         if (!$user || !$user->currentAccessToken() instanceof PersonalAccessToken) {
             return $next($request);

@@ -90,7 +90,7 @@ class DashboardController extends Controller {
         // 3. MY FOCUS LIST (Max 5 Records - Logged-in User Only)
         // ------------------------------------------------------------------
         $myFocusList = Task::with([
-            'project:pro_id,pro_name',
+            'project:pro_id,pro_code,pro_name',
             'assignees.assignedUser:usr_id,usr_name',
             'subtasks:stk_id,stk_tsk_id,stk_title,stk_done'
         ])
@@ -237,7 +237,7 @@ class DashboardController extends Controller {
         // 4. Assigned Tasks List with Subtasks & Relations
         $assignedTasks = (clone $assignedTasksQuery)
             ->with([
-                'project:pro_id,pro_name',
+                'project:pro_id,pro_code,pro_name',
                 'assignees.assignedUser:usr_id,usr_name',
                 'subtasks:stk_id,stk_tsk_id,stk_title,stk_done,stk_completed_at'
             ])
@@ -250,7 +250,7 @@ class DashboardController extends Controller {
             ->get();
 
         // 5. Projects Breakdown
-        $projects = Project::select('pro_id', 'pro_name', 'pro_status')
+        $projects = Project::select('pro_id', 'pro_code', 'pro_name', 'pro_status')
             ->whereHas('tasks.assignees', function ($q) use ($memberId) {
                 $q->where('tsa_usr_id', $memberId)->whereNull('tsa_deleted_on');
             })
@@ -276,6 +276,7 @@ class DashboardController extends Controller {
                     'usr_city' => $user->usr_city ?? 'kanpur',
                     'usr_status' => $user->usr_status ? 'Active' : 'Inactive',
                     'usr_online' => (bool)$user->usr_online,
+                    'usr_avatar' => $user->usr_avatar,
                     'employee_id' => 'U-' . $user->usr_id,
                     'joined_date' => $user->usr_joined ? Carbon::parse($user->usr_joined)->format('d M Y') : '-',
                     'last_seen' => $user->usr_last_seen ? Carbon::parse($user->usr_last_seen)->format('d M, h:i a') : '-',

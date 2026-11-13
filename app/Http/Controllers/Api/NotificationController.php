@@ -17,13 +17,11 @@ class NotificationController extends Controller {
         $notificationQuery = Notification::query()->select('not_id', 'not_kind', 'not_title', 'not_body', 'not_priority', 'not_meta_info', 'not_actor', 'not_is_read', 'not_updated_on');
 
         if (!is_admin()) {
-            $notificationQuery->where('user_id', $userId);
+            $notificationQuery->where('not_usr_id', $userId);
         }
         $notifications = $notificationQuery->orderByDesc('not_updated_on')->get();
 
-        $unread_count = $notifications->map(function ($notification) {
-            return $notification->not_is_read == 0;
-        })->count();
+        $unread_count = $notifications->where('not_is_read', false)->count();
         return response()->json([
             'status' => 'success',
             'notifications' => $notifications,
@@ -41,7 +39,7 @@ class NotificationController extends Controller {
         // Secure query ensuring users can only interact with their own notifications
         $notificationQuery = Notification::query()->where('not_id', $id);
         if (!is_admin()) {
-            $notificationQuery->where('user_id', $userId);
+            $notificationQuery->where('not_usr_id', $userId);
         }
         $notification = $notificationQuery->firstOrFail();
 
@@ -60,6 +58,9 @@ class NotificationController extends Controller {
 
         // 2. Extract redirection rules out of meta_info
         $meta = $notification->not_meta_info;
+        if (is_string($meta)) {
+            $meta = json_decode($meta, true) ?? [];
+        }
         $redirectUrl = null;
 
         if (!empty($meta) && isset($meta['redirect_to'])) {

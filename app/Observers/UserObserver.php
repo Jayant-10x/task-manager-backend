@@ -6,9 +6,11 @@ use App\Models\User;
 use App\Services\Audit\AuditService;
 
 class UserObserver {
-    private const TRACKED_FIELDS = ['name', 'email', 'phone', 'role', 'designation', 'dept', 'city', 'status', 'is_super_admin',];
+    private const TRACKED_FIELDS = ['name', 'email', 'phone', 'role', 'designation', 'dept', 'usr_custom_dept', 'city', 'usr_avatar', 'status', 'is_super_admin',];
 
     public function created(User $user): void {
+        $user->assignDefaultModulePermissions();
+
         app(AuditService::class)->log(
             action: 'create',
             module: 'user',

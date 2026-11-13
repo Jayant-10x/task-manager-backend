@@ -19,6 +19,7 @@ class SalesPipeline extends Model {
         'ssp_code',
         'ssp_name',
         'ssp_account',
+        'ssp_owner_id',
         'ssp_owner',
         'ssp_stage',
         'ssp_value',

@@ -146,9 +146,9 @@ class AuthController extends Controller {
         ) {
             return response()->json([
                 'message' => 'Too many failed login attempts. Please try again later.',
-                'retry_after' => $now->diffInSeconds(
+                'retry_after' => (int) ceil($now->diffInSeconds(
                     Carbon::parse($throttle->lgt_blocked_until)
-                ),
+                )),
             ], 429);
         }
 
@@ -437,7 +437,9 @@ class AuthController extends Controller {
             'usr_phone' => 'nullable|string|max:30',
             'usr_role' => 'required|string|max:50',
             'usr_designation' => 'nullable|string|max:100',
+            'usr_dept' => 'nullable|string|max:40',
             'usr_department' => 'nullable|string|max:40',
+            'usr_custom_dept' => 'nullable|string|max:100',
             'usr_city' => 'nullable|string|max:100',
             'usr_status' => 'required|in:0,1',
 
@@ -452,10 +454,23 @@ class AuthController extends Controller {
         $user->usr_phone = $validated['usr_phone'] ?? '';
         $user->usr_role = $validated['usr_role'];
         $user->usr_designation = $validated['usr_designation'] ?? '';
-        $user->usr_dept = $validated['usr_department'] ?? 'General';
+
+        $customDept = $request->input('usr_custom_dept') ?? $request->input('custom_dept') ?? $request->input('customDepartment');
+        $rawDept = $validated['usr_department'] ?? $validated['usr_dept'] ?? $request->input('dept') ?? $request->input('department');
+
+        if ($rawDept === 'Custom / remark' || !empty($customDept)) {
+            $resolvedDept = !empty($customDept) ? trim($customDept) : ($rawDept !== 'Custom / remark' ? trim($rawDept) : 'General');
+            $user->usr_dept = $resolvedDept;
+            $user->usr_custom_dept = !empty($customDept) ? trim($customDept) : $resolvedDept;
+        } else {
+            $user->usr_dept = $rawDept ?? 'General';
+            $user->usr_custom_dept = null;
+        }
+
         $user->usr_city = $validated['usr_city'] ?? '';
         $user->usr_status = (int)$validated['usr_status'];
-        $user->usr_joined = $request->usr_joined_on;
+        $user->usr_reporting_to = $request->input('usr_reporting_to') ?? $request->input('reporting_to') ?? null;
+        $user->usr_joined = $request->usr_joined ?? $request->usr_joined_on;
 
         // Only update password when a new one is provided
         if (!empty($validated['usr_password'])) {
@@ -528,6 +543,8 @@ class AuthController extends Controller {
             'usr_role' => 'required|string|max:50',
             'usr_designation' => 'nullable|string|max:100',
             'usr_dept' => 'nullable|string|max:40',
+            'usr_department' => 'nullable|string|max:40',
+            'usr_custom_dept' => 'nullable|string|max:100',
             'usr_city' => 'nullable|string|max:100',
             'usr_status' => 'required|in:0,1',
             'usr_joined' => 'nullable|date',
@@ -548,10 +565,25 @@ class AuthController extends Controller {
         $user->usr_phone = $validated['usr_phone'] ?? '';
         $user->usr_role = $validated['usr_role'];
         $user->usr_designation = $validated['usr_designation'] ?? '';
-        $user->usr_dept = $validated['usr_dept'] ?? 'General';
+
+        $customDept = $request->input('usr_custom_dept') ?? $request->input('custom_dept') ?? $request->input('customDepartment');
+        $rawDept = $validated['usr_dept'] ?? $validated['usr_department'] ?? $request->input('dept') ?? $request->input('department');
+
+        if ($rawDept === 'Custom / remark' || !empty($customDept)) {
+            $resolvedDept = !empty($customDept) ? trim($customDept) : ($rawDept !== 'Custom / remark' ? trim($rawDept) : 'General');
+            $user->usr_dept = $resolvedDept;
+            $user->usr_custom_dept = !empty($customDept) ? trim($customDept) : $resolvedDept;
+        } else {
+            $user->usr_dept = $rawDept ?? 'General';
+            $user->usr_custom_dept = null;
+        }
+
         $user->usr_city = $validated['usr_city'] ?? '';
         $user->usr_status = (int)$validated['usr_status'];
-        $user->usr_joined = $validated['usr_joined'];
+        if ($request->has('usr_reporting_to') || $request->has('reporting_to')) {
+            $user->usr_reporting_to = $request->input('usr_reporting_to') ?? $request->input('reporting_to');
+        }
+        $user->usr_joined = $validated['usr_joined'] ?? $user->usr_joined;
 
         // Only update password when a new one is provided
         if (!empty($validated['usr_password'])) {
@@ -618,7 +650,12 @@ class AuthController extends Controller {
     }
 
     public function profile (Request $request) {
-        return response()->json($request->user());
+        $user = $request->user();
+        return response()->json([
+            'user' => $user,
+            'permissions' => $user ? $user->getFlattenedPermissions() : [],
+            'forcePasswordReset' => $user ? (bool)$user->usr_must_change : false,
+        ]);
     }
 
 
@@ -653,7 +690,7 @@ class AuthController extends Controller {
                     'prr_last_requested_at' => !empty($is_reset_request_exist) ? $is_reset_request_exist->prr_last_requested_at : now(),
                     'prr_last_notified_at' => /*!empty($is_reset_request_exist) ? $is_reset_request_exist->prr_last_notified_at :*/ null,
                     'prr_admin_action' => 'pending',
-                    'prr_created_by' => (str_replace(' ', '_', $userExist->usr_name) . '~#~' . $userExist->usr_id . '~#~' . $_SERVER['REMOTE_ADDR']),
+                    'prr_created_by' => (str_replace(' ', '_', $userExist->usr_name) . '~#~' . $userExist->usr_id . '~#~' . ($_SERVER['REMOTE_ADDR'] ?? $request->ip() ?? '127.0.0.1')),
                     'prr_created_on' => now()
                 ]);
 
@@ -673,28 +710,27 @@ class AuthController extends Controller {
                 $notification_data = [
                     'kind' => 'pw_reset_request',
                     'title' => 'HIGH PRIORITY: Password Reset Request',
-                    'body' => get_logged_in_user_name() . ' (' . get_logged_in_user_data()['usr_email'] . ') requested a password reset.',
-                    'actor' => get_logged_in_user_name(),
+                    'body' => $userExist->usr_name . ' (' . $userExist->usr_email . ') requested a password reset.',
+                    'actor' => $userExist->usr_name,
                     'redirect_to' => route('reset.request.opened', ['prr_id' => $resetRequest->prr_id]),
                     'extra_params' => [
                         'prr_id' => $resetRequest->prr_id,
-                        'prr_usr_id' => get_logged_in_user_id(),
-                        'prr_usr_name' => get_logged_in_user_name(),
-                        'prr_usr_email' => get_logged_in_user_data()['usr_email'],
+                        'prr_usr_id' => $userExist->usr_id,
+                        'prr_usr_name' => $userExist->usr_name,
+                        'prr_usr_email' => $userExist->usr_email,
                     ]
                 ];
                 $admins = get_all_super_admins();
                 if (!empty($admins)) {
                     foreach ($admins->toArray() as $admin) {
-                        if ($admin['usr_id'] == get_logged_in_user_id())
-                            continue;
                         $notification_data['receiver_id'] = $admin['usr_id'];
                         sendNotification($notification_data);
                     }
                 }
                 return response()->json([
                     'message' => 'Reset request successfully sent.',
-                    //                    'reset_request' => $resetRequest,
+                    'sent' => true,
+                    'reset_request' => $resetRequest,
                 ], 201);
             } catch (\Exception $e) {
                 return response()->json(['message' => $e->getMessage()], 500);
@@ -707,6 +743,107 @@ class AuthController extends Controller {
     public function getResetRequestsToNotify () {
         $notify_reset_request = PasswordResetRequest::query()->whereNull('prr_last_notified_at')->where('prr_status', '=', 'pending')->get();
         return response()->json($notify_reset_request);
+    }
+
+    public function listPasswordResetRequests (Request $request) {
+        $pending = PasswordResetRequest::query()
+            ->with(['openedBy:usr_id,usr_name', 'completedBy:usr_id,usr_name'])
+            ->where('prr_status', 'pending')
+            ->orderBy('prr_requested_at', 'asc')
+            ->get();
+
+        $history = PasswordResetRequest::query()
+            ->with(['openedBy:usr_id,usr_name', 'completedBy:usr_id,usr_name'])
+            ->where('prr_status', '!=', 'pending')
+            ->orderByDesc('prr_id')
+            ->limit(50)
+            ->get();
+
+        return response()->json([
+            'ok' => true,
+            'pending' => $pending,
+            'history' => $history,
+            'reminderMinutes' => 15,
+        ]);
+    }
+
+    public function setRole(Request $request, $id) {
+        $actor = $request->user();
+        if (!$actor || (!$actor->usr_is_super_admin && $actor->usr_role !== 'admin')) {
+            return response()->json([
+                'message' => 'Forbidden. Only administrators can change user roles.'
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'role' => 'required|string|in:admin,manager,employee',
+        ]);
+        $user = User::findOrFail($id);
+        if ((int)$user->usr_id === (int)$actor->usr_id && strtolower($validated['role']) !== $user->usr_role) {
+            return response()->json([
+                'message' => 'You cannot change your own role.'
+            ], 403);
+        }
+        $oldRole = $user->usr_role;
+        $user->usr_role = strtolower($validated['role']);
+        if ($user->usr_role !== 'admin') {
+            $user->usr_is_super_admin = 0;
+        }
+        $user->save();
+
+        app(AuditService::class)->log(
+            action: 'role_changed',
+            module: 'user',
+            record: $user->usr_id,
+            oldValues: ['role' => $oldRole],
+            newValues: ['role' => $user->usr_role],
+            description: "Changed role of {$user->usr_name} to {$user->usr_role}"
+        );
+
+        return response()->json([
+            'ok' => true,
+            'message' => "Role updated to {$user->usr_role}",
+            'user' => $user->fresh(),
+        ]);
+    }
+
+    public function setSuperAdmin(Request $request, $id) {
+        $actor = $request->user();
+        if (!$actor || !$actor->usr_is_super_admin) {
+            return response()->json([
+                'message' => 'Forbidden. Only a Super Admin can modify Super Admin status.'
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'is_super_admin' => 'required|boolean',
+        ]);
+        $user = User::findOrFail($id);
+        if ((int)$user->usr_id === (int)$actor->usr_id && !$validated['is_super_admin']) {
+            return response()->json([
+                'message' => 'You cannot remove your own Super Admin status.'
+            ], 403);
+        }
+        $user->usr_is_super_admin = $validated['is_super_admin'] ? 1 : 0;
+        if ($validated['is_super_admin']) {
+            $user->usr_role = 'admin';
+        }
+        $user->save();
+
+        app(AuditService::class)->log(
+            action: 'super_admin_toggled',
+            module: 'user',
+            record: $user->usr_id,
+            oldValues: [],
+            newValues: ['is_super_admin' => $user->usr_is_super_admin],
+            description: "Set super admin for {$user->usr_name} to " . ($user->usr_is_super_admin ? 'true' : 'false')
+        );
+
+        return response()->json([
+            'ok' => true,
+            'message' => "Super Admin status updated",
+            'user' => $user->fresh(),
+        ]);
     }
 
     public function resetPasswordNotified ($prr_id) {
@@ -742,27 +879,29 @@ class AuthController extends Controller {
 
     public function resetPasswordRequestOpened ($prr_id) {
         if (!empty($prr_id)) {
-            $requestExist = PasswordResetRequest::query()->where('prr_id', '=', $prr_id)->whereNull('prr_opened_at')->first();
+            $requestExist = PasswordResetRequest::query()->where('prr_id', '=', $prr_id)->first();
             if (!empty($requestExist)) {
-                $is_opened = $requestExist->update([
-                    'prr_opened_at' => now(),
-                    'prr_opened_by' => get_logged_in_user_id(),
-                    'prr_updated_on' => now(),
-                    'prr_updated_by' => setCreatedUpdatedBy(),
-                ]);
-                if ($is_opened) {
-                    app(AuditService::class)->log(
-                        action: 'password_reset_opened',
-                        module: 'auth',
-                        record: $requestExist->prr_code,
-                        oldValues: [],
-                        newValues: [],
-                        description: 'Opened the password reset request of ' . $requestExist->prr_usr_name
-                    );
+                if (is_null($requestExist->prr_opened_at)) {
+                    $is_opened = $requestExist->update([
+                        'prr_opened_at' => now(),
+                        'prr_opened_by' => get_logged_in_user_id(),
+                        'prr_updated_on' => now(),
+                        'prr_updated_by' => setCreatedUpdatedBy(),
+                    ]);
+                    if ($is_opened) {
+                        app(AuditService::class)->log(
+                            action: 'password_reset_opened',
+                            module: 'auth',
+                            record: $requestExist->prr_code,
+                            oldValues: [],
+                            newValues: [],
+                            description: 'Opened the password reset request of ' . $requestExist->prr_usr_name
+                        );
+                    }
                 }
                 return response()->json([
                     'status' => true,
-                    'password_reset_request' => $requestExist,
+                    'password_reset_request' => $requestExist->fresh(),
                 ], 200);
             } else {
                 return response()->json(['message' => 'Reset request not found.'], 404);
@@ -1041,6 +1180,121 @@ class AuthController extends Controller {
 
         return response()->json([
             'message' => 'Password updated successfully.',
+        ]);
+    }
+
+    public function uploadAvatar (Request $request) {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $uploadDir = public_path('uploads' . DIRECTORY_SEPARATOR . 'avatars');
+        if (!file_exists($uploadDir)) {
+            @mkdir($uploadDir, 0755, true);
+        }
+
+        $fileName = null;
+
+        if ($request->has('data') && is_string($request->input('data'))) {
+            $dataStr = $request->input('data');
+            $ext = 'jpg';
+            if (preg_match('/^data:image\/(\w+);base64,/', $dataStr, $type)) {
+                $dataStr = substr($dataStr, strpos($dataStr, ',') + 1);
+                $ext = strtolower($type[1]);
+                if ($ext === 'jpeg') {
+                    $ext = 'jpg';
+                }
+            }
+            $decoded = base64_decode($dataStr);
+            if ($decoded === false || strlen($decoded) === 0) {
+                return response()->json(['message' => 'Invalid image format.'], 422);
+            }
+            if (strlen($decoded) > 10 * 1024 * 1024) {
+                return response()->json(['message' => 'The image may not be greater than 10MB.'], 422);
+            }
+            $fileName = 'avatar_' . $user->usr_id . '_' . time() . '.' . $ext;
+            file_put_contents($uploadDir . DIRECTORY_SEPARATOR . $fileName, $decoded);
+        } elseif ($request->hasFile('avatar') || $request->hasFile('photo') || $request->hasFile('file')) {
+            $file = $request->file('avatar') ?? $request->file('photo') ?? $request->file('file');
+            $request->validate([
+                'avatar' => 'nullable|image|mimes:jpeg,png,jpg,webp,gif|max:10240',
+                'photo' => 'nullable|image|mimes:jpeg,png,jpg,webp,gif|max:10240',
+                'file' => 'nullable|image|mimes:jpeg,png,jpg,webp,gif|max:10240',
+            ]);
+            $ext = $file->getClientOriginalExtension() ?: 'jpg';
+            $fileName = 'avatar_' . $user->usr_id . '_' . time() . '.' . $ext;
+            $file->move($uploadDir, $fileName);
+        } else {
+            return response()->json(['message' => 'No image file or image data provided.'], 422);
+        }
+
+        // Delete old avatar if present on disk
+        if (!empty($user->usr_avatar)) {
+            $parsedPath = parse_url($user->usr_avatar, PHP_URL_PATH);
+            if ($parsedPath) {
+                $oldDiskPath = public_path(ltrim($parsedPath, '/\\'));
+                if (file_exists($oldDiskPath) && is_file($oldDiskPath)) {
+                    @unlink($oldDiskPath);
+                }
+            }
+        }
+
+        $avatarUrl = asset('uploads/avatars/' . $fileName);
+        $oldAvatar = $user->usr_avatar;
+        $user->usr_avatar = $avatarUrl;
+        $user->save();
+
+        app(AuditService::class)->log(
+            action: 'update',
+            module: 'users',
+            record: $user->usr_id,
+            oldValues: ['usr_avatar' => $oldAvatar],
+            newValues: ['usr_avatar' => $avatarUrl],
+            description: 'Updated profile photo.'
+        );
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Profile photo updated successfully.',
+            'avatar' => $avatarUrl,
+            'user' => $user->fresh(),
+        ]);
+    }
+
+    public function removeAvatar (Request $request) {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $oldAvatar = $user->usr_avatar;
+        if (!empty($oldAvatar)) {
+            $parsedPath = parse_url($oldAvatar, PHP_URL_PATH);
+            if ($parsedPath) {
+                $oldDiskPath = public_path(ltrim($parsedPath, '/\\'));
+                if (file_exists($oldDiskPath) && is_file($oldDiskPath)) {
+                    @unlink($oldDiskPath);
+                }
+            }
+            $user->usr_avatar = null;
+            $user->save();
+
+            app(AuditService::class)->log(
+                action: 'update',
+                module: 'users',
+                record: $user->usr_id,
+                oldValues: ['usr_avatar' => $oldAvatar],
+                newValues: ['usr_avatar' => null],
+                description: 'Removed profile photo.'
+            );
+        }
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Profile photo removed successfully.',
+            'avatar' => null,
+            'user' => $user->fresh(),
         ]);
     }
 }

@@ -39,7 +39,8 @@ function get_created_updated_by_db_column ($table, $prefix, $only_updated = fals
 }
 
 function setCreatedUpdatedBy () {
-    return str_replace(' ', '_', get_logged_in_user_name()) . '~#~' . get_logged_in_user_id() . '~#~' . $_SERVER['REMOTE_ADDR'];
+    $remoteIp = $_SERVER['REMOTE_ADDR'] ?? (request() ? request()->ip() : null) ?? '127.0.0.1';
+    return str_replace(' ', '_', get_logged_in_user_name()) . '~#~' . get_logged_in_user_id() . '~#~' . $remoteIp;
 }
 
 function get_date_time_format ($datetime, $format = null) {
