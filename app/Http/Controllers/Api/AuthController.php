@@ -7,10 +7,13 @@ use App\Models\PasswordResetRequest;
 use App\Models\User;
 use App\Services\Audit\AuditService;
 use App\Services\RecycleBinService;
+use App\Mail\PasswordResetLinkMail;
+use App\Mail\ManagerPasswordResetAdminAlertMail;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -664,80 +667,331 @@ class AuthController extends Controller {
             'requested_mail' => 'required|email|exists:users,usr_email',
         ]);
 
-        $userExist = User::query()->select('usr_id', 'usr_name', 'usr_email')->where([
+        $user = User::query()->where([
             ['usr_email', $request->requested_mail],
             ['usr_status', '=', 1]
         ])->first();
 
-        if (!empty($userExist)) {
-            $is_reset_request_exist = PasswordResetRequest::query()->where('prr_usr_email', $request->requested_mail)->orderByDesc('prr_id')->first();
-            try {
-                $lastRequest = PasswordResetRequest::orderBy('prr_id', 'desc')->first();
+        if (empty($user)) {
+            throw ValidationException::withMessages([
+                'requested_mail' => ['No active user found with this email address.']
+            ]);
+        }
 
-                $nextNumber = $lastRequest
-                    ? ((int)str_replace('PR-', '', $lastRequest->prr_code)) + 1
-                    : 1;
+        $isAdmin = (bool)$user->usr_is_super_admin || $user->usr_role === 'admin';
+        $isManager = !$isAdmin && $user->usr_role === 'manager';
 
-                $request_code = 'PR-' . str_pad($nextNumber, 2, '0', STR_PAD_LEFT);
-                $resetRequest = new PasswordResetRequest([
-                    'prr_code' => $request_code,
-                    'prr_usr_id' => $userExist->usr_id,
-                    'prr_usr_name' => $userExist->usr_name,
-                    'prr_usr_email' => $userExist->usr_email,
-                    'prr_request_ip' => $request->ip(),
-                    'prr_request_count' => !empty($is_reset_request_exist) ? $is_reset_request_exist->prr_request_count + 1 : 1,
-                    'prr_requested_at' => now(),
-                    'prr_last_requested_at' => !empty($is_reset_request_exist) ? $is_reset_request_exist->prr_last_requested_at : now(),
-                    'prr_last_notified_at' => /*!empty($is_reset_request_exist) ? $is_reset_request_exist->prr_last_notified_at :*/ null,
-                    'prr_admin_action' => 'pending',
-                    'prr_created_by' => (str_replace(' ', '_', $userExist->usr_name) . '~#~' . $userExist->usr_id . '~#~' . ($_SERVER['REMOTE_ADDR'] ?? $request->ip() ?? '127.0.0.1')),
-                    'prr_created_on' => now()
-                ]);
+        $frontendUrl = request()->header('Origin') ?: env('FRONTEND_URL', 'http://127.0.0.1:5173');
 
-                $resetRequest->save();
-                app(AuditService::class)->log(
-                    action: 'password_reset_request',
-                    module: 'auth',
-                    record: $resetRequest['prr_code'],
-                    oldValues: [],
-                    newValues: [
-                        'Status' => config('constants.PASSWORD_RESET_STATUS.pending'),
-                        'Priority' => config('constants.PASSWORD_RESET_PRIORITY.high'),
-                    ],
-                    description: 'Password reset request.'
-                );
+        // CASE A: ADMIN / SUPER ADMIN
+        // Generate reset token and email directly to the admin's database email.
+        if ($isAdmin) {
+            $token = bin2hex(random_bytes(32));
+            $user->update([
+                'usr_reset_hash' => $token,
+                'usr_reset_expires' => now()->addHours(2),
+                'usr_reset_used' => 0,
+            ]);
 
-                $notification_data = [
+            $resetUrl = rtrim($frontendUrl, '/') . '/?reset=' . $token;
+
+            Mail::to($user->usr_email)->send(
+                new PasswordResetLinkMail($user->usr_name, $user->usr_email, $resetUrl)
+            );
+
+            app(AuditService::class)->log(
+                action: 'password_reset_link_sent',
+                module: 'auth',
+                record: 'user:' . $user->usr_id,
+                oldValues: [],
+                newValues: [
+                    'role' => $user->usr_role,
+                    'email' => $user->usr_email,
+                    'expires_at' => now()->addHours(2)->toDateTimeString(),
+                ],
+                description: "Dispatched password reset email to Admin {$user->usr_name} ({$user->usr_email})"
+            );
+
+            return response()->json([
+                'message' => 'A password reset link has been sent to your email address.',
+                'sent' => true,
+                'target' => 'email',
+            ], 200);
+        }
+
+        // CASE B: MANAGER
+        // Email reset link to manager itself, email alert to admins.
+        // Also creates a tracked PasswordResetRequest so Admin has the option to reset in CRM.
+        if ($isManager) {
+            $token = bin2hex(random_bytes(32));
+            $user->update([
+                'usr_reset_hash' => $token,
+                'usr_reset_expires' => now()->addHours(2),
+                'usr_reset_used' => 0,
+            ]);
+
+            $resetUrl = rtrim($frontendUrl, '/') . '/?reset=' . $token;
+            $adminResetUrl = rtrim($frontendUrl, '/') . '/pwresets';
+
+            // 1. Create a tracked PasswordResetRequest (allows Admin to reset from CRM)
+            $is_reset_request_exist = PasswordResetRequest::query()
+                ->where('prr_usr_email', $user->usr_email)
+                ->orderByDesc('prr_id')
+                ->first();
+
+            $lastRequest = PasswordResetRequest::orderBy('prr_id', 'desc')->first();
+            $nextNumber = $lastRequest
+                ? ((int)str_replace('PR-', '', $lastRequest->prr_code)) + 1
+                : 1;
+
+            $request_code = 'PR-' . str_pad($nextNumber, 2, '0', STR_PAD_LEFT);
+            $resetRequest = new PasswordResetRequest([
+                'prr_code' => $request_code,
+                'prr_usr_id' => $user->usr_id,
+                'prr_usr_name' => $user->usr_name,
+                'prr_usr_email' => $user->usr_email,
+                'prr_request_ip' => $request->ip(),
+                'prr_request_count' => !empty($is_reset_request_exist) ? $is_reset_request_exist->prr_request_count + 1 : 1,
+                'prr_requested_at' => now(),
+                'prr_last_requested_at' => !empty($is_reset_request_exist) ? $is_reset_request_exist->prr_last_requested_at : now(),
+                'prr_last_notified_at' => null,
+                'prr_admin_action' => 'pending',
+                'prr_status' => 'pending',
+                'prr_priority' => 'high',
+                'prr_created_by' => (str_replace(' ', '_', $user->usr_name) . '~#~' . $user->usr_id . '~#~' . ($_SERVER['REMOTE_ADDR'] ?? $request->ip() ?? '127.0.0.1')),
+                'prr_created_on' => now()
+            ]);
+            $resetRequest->save();
+
+            // 2. Send reset email to the manager
+            Mail::to($user->usr_email)->send(
+                new PasswordResetLinkMail($user->usr_name, $user->usr_email, $resetUrl)
+            );
+
+            // 3. Alert all active Admins via email with direct link to CRM reset panel
+            $admins = User::where(function ($q) {
+                $q->where('usr_is_super_admin', 1)->orWhere('usr_role', 'admin');
+            })->where('usr_status', 1)->where('usr_id', '!=', $user->usr_id)->get();
+
+            foreach ($admins as $admin) {
+                if (!empty($admin->usr_email)) {
+                    Mail::to($admin->usr_email)->send(new ManagerPasswordResetAdminAlertMail(
+                        managerName: $user->usr_name,
+                        managerEmail: $user->usr_email,
+                        requestedAt: now()->format('d M Y, h:i A'),
+                        ipAddress: $request->ip(),
+                        resetActionUrl: $adminResetUrl
+                    ));
+                }
+            }
+
+            // 4. Dispatch internal in-app notification to Admins
+            foreach ($admins as $admin) {
+                sendNotification([
+                    'receiver_id' => $admin->usr_id,
                     'kind' => 'pw_reset_request',
-                    'title' => 'HIGH PRIORITY: Password Reset Request',
-                    'body' => $userExist->usr_name . ' (' . $userExist->usr_email . ') requested a password reset.',
-                    'actor' => $userExist->usr_name,
+                    'title' => 'HIGH PRIORITY: Manager Password Reset Request',
+                    'body' => "Manager {$user->usr_name} ({$user->usr_email}) requested a password reset.",
+                    'actor' => $user->usr_name,
+                    'priority' => 'high',
                     'redirect_to' => route('reset.request.opened', ['prr_id' => $resetRequest->prr_id]),
                     'extra_params' => [
                         'prr_id' => $resetRequest->prr_id,
-                        'prr_usr_id' => $userExist->usr_id,
-                        'prr_usr_name' => $userExist->usr_name,
-                        'prr_usr_email' => $userExist->usr_email,
+                        'prr_usr_id' => $user->usr_id,
+                        'prr_usr_name' => $user->usr_name,
+                        'prr_usr_email' => $user->usr_email,
                     ]
-                ];
-                $admins = get_all_super_admins();
-                if (!empty($admins)) {
-                    foreach ($admins->toArray() as $admin) {
-                        $notification_data['receiver_id'] = $admin['usr_id'];
-                        sendNotification($notification_data);
-                    }
-                }
-                return response()->json([
-                    'message' => 'Reset request successfully sent.',
-                    'sent' => true,
-                    'reset_request' => $resetRequest,
-                ], 201);
-            } catch (\Exception $e) {
-                return response()->json(['message' => $e->getMessage()], 500);
+                ]);
             }
-        } else {
-            throw ValidationException::withMessages(['user not found.']);
+
+            // 5. Record in Audit Log
+            app(AuditService::class)->log(
+                action: 'manager_password_reset_requested',
+                module: 'auth',
+                record: $resetRequest->prr_code,
+                oldValues: [],
+                newValues: [
+                    'role' => 'manager',
+                    'email' => $user->usr_email,
+                    'reset_code' => $resetRequest->prr_code,
+                    'notified_admins_count' => $admins->count(),
+                    'expires_at' => now()->addHours(2)->toDateTimeString(),
+                ],
+                description: "Password reset link emailed to Manager {$user->usr_name} ({$user->usr_email}) and alert emailed to admins with CRM reset option."
+            );
+
+            return response()->json([
+                'message' => 'A password reset link has been sent to your email address and administrators have been notified.',
+                'sent' => true,
+                'target' => 'email',
+                'reset_request' => $resetRequest,
+            ], 200);
         }
+
+        // CASE C: EMPLOYEE (Standard Request Flow)
+        // Normal flow: Creates PasswordResetRequest, notifies Super Admins in-app, logs audit.
+        try {
+            $is_reset_request_exist = PasswordResetRequest::query()
+                ->where('prr_usr_email', $request->requested_mail)
+                ->orderByDesc('prr_id')
+                ->first();
+
+            $lastRequest = PasswordResetRequest::orderBy('prr_id', 'desc')->first();
+
+            $nextNumber = $lastRequest
+                ? ((int)str_replace('PR-', '', $lastRequest->prr_code)) + 1
+                : 1;
+
+            $request_code = 'PR-' . str_pad($nextNumber, 2, '0', STR_PAD_LEFT);
+            $resetRequest = new PasswordResetRequest([
+                'prr_code' => $request_code,
+                'prr_usr_id' => $user->usr_id,
+                'prr_usr_name' => $user->usr_name,
+                'prr_usr_email' => $user->usr_email,
+                'prr_request_ip' => $request->ip(),
+                'prr_request_count' => !empty($is_reset_request_exist) ? $is_reset_request_exist->prr_request_count + 1 : 1,
+                'prr_requested_at' => now(),
+                'prr_last_requested_at' => !empty($is_reset_request_exist) ? $is_reset_request_exist->prr_last_requested_at : now(),
+                'prr_last_notified_at' => null,
+                'prr_admin_action' => 'pending',
+                'prr_created_by' => (str_replace(' ', '_', $user->usr_name) . '~#~' . $user->usr_id . '~#~' . ($_SERVER['REMOTE_ADDR'] ?? $request->ip() ?? '127.0.0.1')),
+                'prr_created_on' => now()
+            ]);
+
+            $resetRequest->save();
+            app(AuditService::class)->log(
+                action: 'password_reset_request',
+                module: 'auth',
+                record: $resetRequest['prr_code'],
+                oldValues: [],
+                newValues: [
+                    'Status' => config('constants.PASSWORD_RESET_STATUS.pending'),
+                    'Priority' => config('constants.PASSWORD_RESET_PRIORITY.high'),
+                ],
+                description: 'Password reset request.'
+            );
+
+            $notification_data = [
+                'kind' => 'pw_reset_request',
+                'title' => 'HIGH PRIORITY: Password Reset Request',
+                'body' => $user->usr_name . ' (' . $user->usr_email . ') requested a password reset.',
+                'actor' => $user->usr_name,
+                'redirect_to' => route('reset.request.opened', ['prr_id' => $resetRequest->prr_id]),
+                'extra_params' => [
+                    'prr_id' => $resetRequest->prr_id,
+                    'prr_usr_id' => $user->usr_id,
+                    'prr_usr_name' => $user->usr_name,
+                    'prr_usr_email' => $user->usr_email,
+                ]
+            ];
+            $admins = get_all_super_admins();
+            if (!empty($admins)) {
+                foreach ($admins->toArray() as $admin) {
+                    $notification_data['receiver_id'] = $admin['usr_id'];
+                    sendNotification($notification_data);
+                }
+            }
+            return response()->json([
+                'message' => 'Reset request successfully sent.',
+                'sent' => true,
+                'reset_request' => $resetRequest,
+            ], 201);
+        } catch (\Exception $e) {
+            return response()->json(['message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function checkResetToken (Request $request) {
+        $token = $request->query('reset') ?: $request->input('reset');
+        if (empty($token)) {
+            return response()->json(['message' => 'Reset token is required.'], 400);
+        }
+
+        $user = User::query()
+            ->where('usr_reset_hash', $token)
+            ->where('usr_status', 1)
+            ->first();
+
+        if (!$user) {
+            return response()->json(['message' => 'This reset link is not valid. Please request a new one.'], 404);
+        }
+
+        if ($user->usr_reset_used) {
+            return response()->json(['message' => 'This reset link has already been used. Please request a new one.'], 400);
+        }
+
+        if ($user->usr_reset_expires && now()->gt($user->usr_reset_expires)) {
+            return response()->json(['message' => 'This reset link has expired. Please request a new one.'], 400);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'name' => $user->usr_name,
+            'email' => $user->usr_email,
+            'role' => $user->usr_role,
+        ]);
+    }
+
+    public function confirmPasswordReset (Request $request) {
+        $validated = $request->validate([
+            'reset' => 'required|string',
+            'password' => 'required|string|min:8',
+        ]);
+
+        $token = $validated['reset'];
+        $user = User::query()
+            ->where('usr_reset_hash', $token)
+            ->where('usr_status', 1)
+            ->first();
+
+        if (!$user) {
+            return response()->json(['message' => 'This reset link is not valid. Please request a new one.'], 404);
+        }
+
+        if ($user->usr_reset_used) {
+            return response()->json(['message' => 'This reset link has already been used. Please request a new one.'], 400);
+        }
+
+        if ($user->usr_reset_expires && now()->gt($user->usr_reset_expires)) {
+            return response()->json(['message' => 'This reset link has expired. Please request a new one.'], 400);
+        }
+
+        $user->usr_password = Hash::make($validated['password']);
+        $user->usr_reset_used = 1;
+        $user->usr_reset_hash = null;
+        $user->usr_reset_expires = null;
+        $user->usr_must_change = 0;
+        $user->save();
+
+        // If there is any open PasswordResetRequest for this user (e.g. manager), mark it completed
+        PasswordResetRequest::query()
+            ->where('prr_usr_id', $user->usr_id)
+            ->where('prr_status', 'pending')
+            ->update([
+                'prr_status' => 'reset_successfully',
+                'prr_admin_action' => 'email_link',
+                'prr_completed_at' => now(),
+                'prr_completed_by' => $user->usr_id,
+                'prr_updated_by' => (str_replace(' ', '_', $user->usr_name) . '~#~' . $user->usr_id . '~#~' . ($_SERVER['REMOTE_ADDR'] ?? request()->ip() ?? '127.0.0.1')),
+                'prr_updated_on' => now()
+            ]);
+
+        app(AuditService::class)->log(
+            action: 'password_reset_completed',
+            module: 'auth',
+            record: 'user:' . $user->usr_id,
+            oldValues: [],
+            newValues: [
+                'method' => 'email_reset_link',
+                'role' => $user->usr_role,
+            ],
+            description: "Password reset completed via emailed link for {$user->usr_name} ({$user->usr_email})"
+        );
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Your password has been set. Please sign in with the new password.',
+        ]);
     }
 
     public function getResetRequestsToNotify () {
@@ -1014,7 +1268,10 @@ class AuthController extends Controller {
 
         User::query()->where('usr_id', '=', $resetRequestExist->prr_usr_id)->update([
             'usr_must_change' => 1,
-            'usr_password' => Hash::make($generatedPassword)
+            'usr_password' => Hash::make($generatedPassword),
+            'usr_reset_hash' => null,
+            'usr_reset_expires' => null,
+            'usr_reset_used' => 1,
         ]);
 
         app(AuditService::class)->log(

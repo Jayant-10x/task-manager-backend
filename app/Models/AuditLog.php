@@ -26,8 +26,11 @@ class AuditLog extends Model {
 
     protected function casts(): array {
         return [
+            'alg_old_values' => 'array',
+            'alg_new_values' => 'array',
             'old_values' => 'array',
             'new_values' => 'array',
+            'alg_updated_on' => 'datetime',
             'updated_on' => 'datetime',
         ];
     }

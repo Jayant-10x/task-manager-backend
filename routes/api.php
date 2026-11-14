@@ -22,6 +22,8 @@ Route::get('/health', function () {
 // Public routes
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/reset_password/through-mail', [AuthController::class, 'resetThroughEmail']);
+Route::get('/reset-password/check', [AuthController::class, 'checkResetToken']);
+Route::post('/reset-password/confirm', [AuthController::class, 'confirmPasswordReset']);
 // Protected routes (Requires Bearer Token)
 Route::middleware(['auth:sanctum', 'enforce.inactivity'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index'])->middleware('permission:dashboard,can_view');
