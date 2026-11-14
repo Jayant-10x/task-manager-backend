@@ -19,9 +19,19 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['*'],
+    'allowed_origins' => [
+        'https://task-manager.clicxormedia.in',
+        'https://api-task-manager.clicxormedia.in',
+        'https://the10xagency.in',
+        'https://task.the10xagency.in',
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        '*',
+    ],
 
     'allowed_origins_patterns' => [
+        '#^https?://.*\.clicxormedia\.in$#',
+        '#^https?://.*\.the10xagency\.in$#',
         '#^https?://localhost(:\d+)?$#',
         '#^https?://127\.0\.0\.1(:\d+)?$#',
         '#^https?://192\.168\.\d+\.\d+(:\d+)?$#',
