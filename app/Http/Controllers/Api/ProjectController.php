@@ -301,7 +301,7 @@ class ProjectController extends Controller {
             'start_date' => 'nullable|date',
             'due_date' => 'nullable|date',
             'budget' => 'nullable|decimal:0,2|min:0',
-            'project_members' => 'nullable|array|min:1',
+            'project_members' => 'nullable|array',
             'project_members.*' => 'exists:users,usr_id',
         ]);
 

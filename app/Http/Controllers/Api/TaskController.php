@@ -151,7 +151,17 @@ class TaskController extends Controller {
             'priority' => 'required|in:' . implode(',', array_keys(config('constants.TASK_PRIORITY'))),
             'status' => 'required|in:' . implode(',', array_keys(config('constants.TASK_STATUS'))),
             'start_date' => 'nullable|date',
-            'due_date' => 'nullable|date',
+            'due_date' => [
+                'nullable',
+                'date',
+                function ($attribute, $value, $fail) use ($request) {
+                    if ($value && $request->filled('start_date')) {
+                        if (strtotime($value) < strtotime($request->input('start_date'))) {
+                            $fail('The due date must be a date after or equal to the start date.');
+                        }
+                    }
+                },
+            ],
             'est_hours' => 'nullable|numeric',
             //            'spent_hours' => 'nullable|numeric',
             'tags' => 'nullable|min:2|max:250',
@@ -354,7 +364,17 @@ class TaskController extends Controller {
             'priority' => 'required|in:' . implode(',', array_keys(config('constants.TASK_PRIORITY'))),
             'status' => 'required|in:' . implode(',', array_keys(config('constants.TASK_STATUS'))),
             'start_date' => 'nullable|date',
-            'due_date' => 'nullable|date',
+            'due_date' => [
+                'nullable',
+                'date',
+                function ($attribute, $value, $fail) use ($request) {
+                    if ($value && $request->filled('start_date')) {
+                        if (strtotime($value) < strtotime($request->input('start_date'))) {
+                            $fail('The due date must be a date after or equal to the start date.');
+                        }
+                    }
+                },
+            ],
             'est_hours' => 'nullable|numeric',
             'spent_hours' => 'nullable|numeric',
             'tags' => 'nullable|min:1|max:250',

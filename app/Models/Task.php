@@ -33,7 +33,7 @@ class Task extends Model {
     }
 
     public function subtasks () {
-        return $this->hasMany(Subtask::class, 'stk_tsk_id', 'tsk_id');
+        return $this->hasMany(SubTask::class, 'stk_tsk_id', 'tsk_id');
     }
 
     public function comments () {

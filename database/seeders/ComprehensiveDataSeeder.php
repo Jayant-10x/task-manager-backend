@@ -6,7 +6,7 @@ use App\Models\Notification;
 use App\Models\Project;
 use App\Models\ProjectMember;
 use App\Models\SalesPipeline;
-use App\Models\Subtask;
+use App\Models\SubTask;
 use App\Models\Task;
 use App\Models\TaskAssignee;
 use App\Models\TaskComment;
@@ -314,16 +314,16 @@ class ComprehensiveDataSeeder extends Seeder
         TaskAssignee::firstOrCreate(['tsa_tsk_id' => $t5->tsk_id, 'tsa_usr_id' => $manager->usr_id]);
 
         // 5. Subtasks
-        Subtask::updateOrCreate(
+        SubTask::updateOrCreate(
             ['stk_tsk_id' => $t1->tsk_id, 'stk_title' => 'Configure push notification fallbacks'],
             ['stk_done' => true, 'stk_sort_order' => 1]
         );
-        Subtask::updateOrCreate(
+        SubTask::updateOrCreate(
             ['stk_tsk_id' => $t1->tsk_id, 'stk_title' => 'Verify unread counter decrements on read'],
             ['stk_done' => false, 'stk_sort_order' => 2]
         );
 
-        Subtask::updateOrCreate(
+        SubTask::updateOrCreate(
             ['stk_tsk_id' => $t2->tsk_id, 'stk_title' => 'Design responsive layout for charts'],
             ['stk_done' => false, 'stk_sort_order' => 1]
         );
