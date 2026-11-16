@@ -1449,10 +1449,81 @@ class TaskController extends Controller {
         return $existProId;
     }
 
-    public function getMentionsUserForChat () {
-        $mentions = User::query()->where('usr_status', '=', 1)->get(['users.usr_name', 'users.usr_id'])->mapWithKeys(function ($user) {
-            return [$user['usr_id'] => '@' . str_replace(' ', '_', $user['usr_name'])];
-        })->toArray();
+    public function getMentionsUserForChat (Request $request) {
+        $taskId = $request->query('task_id') ?? $request->query('taskId');
+        $loggedInUserId = (int) get_logged_in_user_id();
+        $loggedInUser = $loggedInUserId ? User::find($loggedInUserId) : null;
+
+        if ($taskId) {
+            $task = $this->findTaskByAnyId($taskId);
+            if ($task) {
+                $assigneeIds = $task->assignees()->pluck('tsa_usr_id')->map(fn($id) => (int)$id)->toArray();
+                $allowedIds = $assigneeIds;
+
+                $superAdminIds = User::where('usr_status', 1)
+                    ->where('usr_is_super_admin', 1)
+                    ->pluck('usr_id')
+                    ->map(fn($id) => (int)$id)
+                    ->toArray();
+
+                $adminIds = User::where('usr_status', 1)
+                    ->where(function($q) {
+                        $q->where('usr_role', 'admin')
+                          ->orWhere('usr_is_super_admin', 1);
+                    })
+                    ->pluck('usr_id')
+                    ->map(fn($id) => (int)$id)
+                    ->toArray();
+
+                $isSuper = (bool) ($loggedInUser?->usr_is_super_admin ?? false);
+                $role = strtolower($loggedInUser?->usr_role ?? 'employee');
+                $isAdmin = $isSuper || $role === 'admin';
+                $isManager = !$isAdmin && $role === 'manager';
+
+                if ($isAdmin) {
+                    $allowedIds = array_merge($allowedIds, $adminIds);
+                    if (!empty($assigneeIds)) {
+                        $employeeAssigneeManagers = User::whereIn('usr_id', $assigneeIds)
+                            ->where('usr_role', 'employee')
+                            ->whereNotNull('usr_reporting_to')
+                            ->pluck('usr_reporting_to')
+                            ->map(fn($id) => (int)$id)
+                            ->toArray();
+                        $allowedIds = array_merge($allowedIds, $employeeAssigneeManagers);
+                    }
+                } elseif ($isManager) {
+                    if ($loggedInUser?->usr_reporting_to) {
+                        $allowedIds[] = (int) $loggedInUser->usr_reporting_to;
+                    }
+                    $allowedIds = array_merge($allowedIds, $adminIds);
+                } else {
+                    if ($loggedInUser?->usr_reporting_to) {
+                        $allowedIds[] = (int) $loggedInUser->usr_reporting_to;
+                    }
+                    $allowedIds = array_merge($allowedIds, $superAdminIds);
+                }
+
+                $allowedIds = array_values(array_diff(array_unique(array_filter($allowedIds)), [$loggedInUserId]));
+
+                $mentions = User::query()
+                    ->where('usr_status', 1)
+                    ->whereIn('usr_id', $allowedIds)
+                    ->get(['users.usr_name', 'users.usr_id'])
+                    ->mapWithKeys(function ($user) {
+                        return [$user['usr_id'] => '@' . str_replace(' ', '_', $user['usr_name'])];
+                    })->toArray();
+
+                return response()->json($mentions);
+            }
+        }
+
+        $mentions = User::query()
+            ->where('usr_status', '=', 1)
+            ->when($loggedInUserId, fn($q) => $q->where('usr_id', '!=', $loggedInUserId))
+            ->get(['users.usr_name', 'users.usr_id'])
+            ->mapWithKeys(function ($user) {
+                return [$user['usr_id'] => '@' . str_replace(' ', '_', $user['usr_name'])];
+            })->toArray();
         return response()->json($mentions);
     }
 
