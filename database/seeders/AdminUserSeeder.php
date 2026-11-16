@@ -9,7 +9,7 @@ use Illuminate\Database\Seeder;
 class AdminUserSeeder extends Seeder {
     public function run(): void {
         $admin = User::firstOrCreate(
-            ['usr_email' => 'admin@the10xagency.in'],
+            ['usr_email' => 'info@the10xagency.in'],
             [
                 'usr_name' => 'Super Admin',
                 'usr_password' => 'admin@1123',
