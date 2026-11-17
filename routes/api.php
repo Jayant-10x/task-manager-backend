@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ProjectController;
+use App\Http\Controllers\Api\ProjectSyncController;
 use App\Http\Controllers\Api\RecycleBinController;
 use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\SalesPipelineController;
@@ -24,6 +25,10 @@ Route::post('/login', [AuthController::class, 'login']);
 Route::post('/reset_password/through-mail', [AuthController::class, 'resetThroughEmail']);
 Route::get('/reset-password/check', [AuthController::class, 'checkResetToken']);
 Route::post('/reset-password/confirm', [AuthController::class, 'confirmPasswordReset']);
+
+// Inbound Project Webhook (Server-to-Server, authenticated via X-Sync-Secret header)
+Route::post('/webhooks/projects', [ProjectSyncController::class, 'handleProjectSync']);
+
 // Protected routes (Requires Bearer Token)
 Route::middleware(['auth:sanctum', 'enforce.inactivity'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index'])->middleware('permission:dashboard,can_view');

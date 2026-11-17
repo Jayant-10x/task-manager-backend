@@ -21,14 +21,23 @@ class ApiIntegrationTest extends TestCase
         // Resolve or create admin user
         $this->adminUser = User::query()->where('usr_email', 'admin@example.com')->first();
         if (!$this->adminUser) {
-            $this->adminUser = User::create([
-                'usr_name' => 'Super Admin',
-                'usr_email' => 'admin@example.com',
-                'usr_password' => Hash::make('Admin@123456'),
-                'usr_role' => 'admin',
-                'usr_is_super_admin' => 1,
-                'usr_status' => 1,
-            ]);
+            $existingSuperAdmin = User::query()->where('usr_name', 'Super Admin')->first();
+            if ($existingSuperAdmin) {
+                $existingSuperAdmin->update([
+                    'usr_email' => 'admin@example.com',
+                    'usr_password' => Hash::make('Admin@123456'),
+                ]);
+                $this->adminUser = $existingSuperAdmin;
+            } else {
+                $this->adminUser = User::create([
+                    'usr_name' => 'Super Admin',
+                    'usr_email' => 'admin@example.com',
+                    'usr_password' => Hash::make('Admin@123456'),
+                    'usr_role' => 'admin',
+                    'usr_is_super_admin' => 1,
+                    'usr_status' => 1,
+                ]);
+            }
         } else {
             $this->adminUser->update([
                 'usr_password' => Hash::make('Admin@123456'),

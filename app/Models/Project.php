@@ -21,6 +21,7 @@ class Project extends Model {
     protected $fillable = [
         'pro_id',
         'pro_code',
+        'pro_pms_code',
         'pro_name',
         'pro_description',
         'pro_manager',

@@ -19,6 +19,8 @@ class AuditLogController extends Controller {
             'q' => ['sometimes', 'string', 'max:100'],
         ]);
 
+        $perPage = max(1, min(100, (int) $request->input('per_page', config('constants.PER_PAGE_ITEM_COUNT', 20))));
+
         $logs = AuditLog::query()
             ->when(
                 $filters['module'] ?? null,
@@ -61,10 +63,18 @@ class AuditLogController extends Controller {
                     $value
                 )
             )
-            ->orderByDesc('alg_updated_on')->paginate(config('constants.PER_PAGE_ITEM_COUNT'));
-        /*->paginate(25)
-        ->withQueryString()*/
+            ->orderByDesc('alg_updated_on')
+            ->orderByDesc('alg_id')
+            ->paginate($perPage);
 
-        return response()->json($logs);
+        $distinctModules = AuditLog::query()->select('alg_module')->distinct()->pluck('alg_module')->filter()->values();
+        $distinctActions = AuditLog::query()->select('alg_action')->distinct()->pluck('alg_action')->filter()->values();
+
+        $responsePayload = array_merge($logs->toArray(), [
+            'modules' => $distinctModules,
+            'actions' => $distinctActions,
+        ]);
+
+        return response()->json($responsePayload);
     }
 }

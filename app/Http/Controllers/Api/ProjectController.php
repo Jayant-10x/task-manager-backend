@@ -106,6 +106,8 @@ class ProjectController extends Controller {
             return [
                 'pro_id' => $project->pro_id,
                 'pro_code' => $project->pro_code ?? ('P-' . str_pad($project->pro_id, 2, '0', STR_PAD_LEFT)),
+                'pro_pms_code' => $project->pro_pms_code,
+                'pms_code' => $project->pro_pms_code,
                 'pro_title' => $project->pro_name,
                 'pro_description' => $project->pro_description,
                 'pro_status' => $project->pro_status,

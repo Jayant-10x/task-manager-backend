@@ -479,46 +479,15 @@ class AuthController extends Controller {
         if (!empty($validated['usr_password'])) {
             $user->usr_password = $validated['usr_password'];
             $user->usr_must_change = 1;
+        } else {
+            $user->usr_password = Hash::make(\Illuminate\Support\Str::random(16));
+            $user->usr_must_change = 1;
         }
 
         // Update audit information if these columns exist
         $user->usr_created_by = auth()->id();
         $user->usr_created_on = now();
         $user->save();
-
-        // Get the fields actually changed by this save
-        $changes = $user->getChanges();
-
-        // Exclude audit metadata from the business change history
-        unset(
-            $changes['usr_updated_by'],
-            $changes['usr_updated_on'],
-            $changes['usr_created_by'],
-            $changes['usr_created_on'],
-            $changes['usr_deleted_on']
-        );
-
-        $oldValues = [];
-        $newValues = [];
-
-        foreach ($changes as $field => $newValue) {
-            $oldValue = $originalValues[$field] ?? null;
-
-            // Record only genuine value changes
-            if ($oldValue != $newValue) {
-                $oldValues[$field] = $oldValue;
-                $newValues[$field] = $newValue;
-            }
-        }
-
-        app(AuditService::class)->log(
-            action: 'create',
-            module: 'user',
-            record: $user->usr_id,
-            oldValues: [],
-            newValues: $newValues,
-            description: 'Created user ' . $user->usr_name
-        );
 
         return response()->json([
             'message' => 'User created successfully',
@@ -592,6 +561,9 @@ class AuthController extends Controller {
         if (!empty($validated['usr_password'])) {
             $user->usr_password = $validated['usr_password'];
             $user->usr_must_change = 1;
+        } else {
+            $user->usr_password = Hash::make(\Illuminate\Support\Str::random(16));
+            $user->usr_must_change = 1;
         }
 
         // Update audit information if these columns exist
@@ -601,46 +573,15 @@ class AuthController extends Controller {
         // Get the fields actually changed by this save
         $changes = $user->getChanges();
 
-        // Exclude audit metadata from the business change history
-        unset(
-            $changes['usr_updated_by'],
-            $changes['usr_updated_on'],
-            $changes['usr_created_by'],
-            $changes['usr_created_on'],
-            $changes['usr_deleted_on']
-        );
-
-        $oldValues = [];
-        $newValues = [];
-
-        foreach ($changes as $field => $newValue) {
-            $oldValue = $originalValues[$field] ?? null;
-
-            // Record only genuine value changes
-            if ($oldValue != $newValue) {
-                $oldValues[$field] = $oldValue;
-                $newValues[$field] = $newValue;
-            }
-        }
-
-        app(AuditService::class)->log(
-            action: 'update',
-            module: 'user',
-            record: $user->usr_id,
-            oldValues: $oldValues,
-            newValues: $newValues,
-            description: 'Updated user ' . $user->usr_name
-        );
-
-        if (array_key_exists('usr_role', $newValues)) {
+        if ($user->wasChanged('usr_role')) {
             app(AuditService::class)->log(
                 action: 'role_changed',
                 module: 'security',
                 record: 'user:' . $user->usr_id,
                 oldValues: [],
                 newValues: [
-                    'from' => config('constants.ROLES')[$old_role],
-                    'to' => config('constants.ROLES')[$user->usr_role],
+                    'from' => config('constants.ROLES')[$old_role] ?? $old_role,
+                    'to' => config('constants.ROLES')[$user->usr_role] ?? $user->usr_role,
                 ],
                 description: 'Security: role changed'
             );

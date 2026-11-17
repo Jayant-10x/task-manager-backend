@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'project_sync' => [
+        'secret' => env('PROJECT_SYNC_SECRET'),
+    ],
+
 ];

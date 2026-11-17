@@ -17,10 +17,17 @@ class UserDepartmentTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->admin = User::where('usr_email', 'admin@example.com')->first();
-        if ($this->admin) {
-            Sanctum::actingAs($this->admin);
-        }
+        $this->admin = User::firstOrCreate(
+            ['usr_email' => 'admin_dept_test@the10xagency.in'],
+            [
+                'usr_name' => 'Admin Dept Test',
+                'usr_password' => \Illuminate\Support\Facades\Hash::make('password123'),
+                'usr_role' => 'admin',
+                'usr_is_super_admin' => 1,
+                'usr_status' => 1,
+            ]
+        );
+        Sanctum::actingAs($this->admin);
     }
 
     protected function tearDown(): void
